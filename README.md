@@ -1,0 +1,116 @@
+# NotchDrop
+
+Convierte el notch de tu MacBook en un Dynamic Island funcional: reproductor, bandeja de archivos, descargador de links, convertidor de formatos, herramientas rápidas y notas — todo desde un panel que vive en la parte superior de la pantalla.
+
+En Macs **sin** notch físico dibuja uno simulado, así que funciona en cualquier Mac.
+
+---
+
+## Funciones
+
+### 🎵 Player
+- **Now Playing universal** — Apple Music, Spotify, Safari, Chrome y cualquier app que publique una sesión del sistema. Con respaldo por AppleScript para Spotify y detección de Netflix en Chrome.
+- **Waveform en vivo** — niveles reales del audio de salida mediante un *process tap* de Core Audio. No usa ScreenCaptureKit, así que nunca aparece el ícono de "compartiendo pantalla".
+- **Control de volumen del sistema** — con silenciar, sincronizado con cambios hechos desde el teclado o Control Center.
+- **Barra de progreso con búsqueda** — arrastra para adelantar la canción.
+- **Espejo de cámara** — vista rápida de la cámara frontal.
+
+### 📁 Shelf
+- Arrastra archivos al notch para guardarlos temporalmente y volver a arrastrarlos a donde los necesites.
+- **AirDrop** directo de lo que tengas en la bandeja.
+- **Descarga de links** — pega un link de TikTok, Instagram, X, YouTube, Reddit (~1800 sitios) y baja el video o la imagen. Elige **MP4** o **MP3**. Los archivos van a `Descargas` y aparecen en la bandeja.
+- El Shelf **persiste** entre reinicios.
+
+### 🔄 Convert
+- **Cambiar formato** según lo que subas:
+  - Video → MP4, MOV, M4V, WebM, GIF, MP3, M4A, WAV
+  - Audio → MP3, M4A, WAV, AIFF, FLAC
+  - Imagen → PNG, JPG, HEIC, TIFF, PDF
+  - PDF → PNG, JPG (una imagen por página)
+- **Comprimir** con calidad ajustable (90 / 75 / 50 / 30 %).
+- Nunca sobrescribe el original: escribe al lado con nombre distinto.
+
+### ⚡ Tools
+- **Alarmas** por preset o por hora específica, con un tono de alarma real en loop (no un bip de notificación). Se detiene desde el panel o desde la notificación.
+- **Cronómetro.**
+- **Historial de portapapeles** con texto e imágenes. Respeta los marcadores de "contenido confidencial" que usan los gestores de contraseñas, así que las contraseñas copiadas nunca se guardan.
+
+### 📝 Notes
+Captura rápida directo a Apple Notes.
+
+### ⚙️ Ajustes
+Auto-inicio, apertura por hover, tamaño del panel, diagnóstico del notch, persistencia del portapapeles, configuración del descargador y tutorial.
+
+### ⌨️ Atajo global
+**⌥⌘N** abre y cierra el notch desde cualquier app. Usa la API de Carbon, que **no requiere el permiso de "Monitoreo de entrada"** — solo registra esa combinación, sin ver el resto de lo que escribes.
+
+---
+
+## Instalación
+
+### Desde el código
+
+```bash
+git clone <url-del-repo>
+cd NotchDrop
+./build.sh
+cp -R NotchDrop.app /Applications/
+```
+
+### Desde una release
+
+Descarga el `.app`, muévelo a `/Applications` y **haz clic derecho → Abrir** la primera vez.
+
+> Ese paso extra es porque la app no está *notarizada* con una cuenta Apple Developer de pago. macOS avisará "desarrollador no identificado". Es normal en herramientas open source; solo pasa la primera vez.
+
+---
+
+## Requisitos
+
+- **macOS 13.0+** (Ventura). El waveform en vivo requiere 14.2+.
+- Cualquier Mac. Con notch se ve mejor; sin notch se dibuja uno simulado.
+
+### Opcionales
+
+| Herramienta | Para qué | Instalar |
+|---|---|---|
+| `yt-dlp` | descargar links | `brew install yt-dlp` |
+| `ffmpeg` | convertir video/audio | `brew install ffmpeg` |
+
+Las conversiones de **imagen y PDF no necesitan nada** — usan frameworks nativos de macOS.
+
+---
+
+## Permisos
+
+macOS los pedirá por separado la primera vez:
+
+| Permiso | Para qué |
+|---|---|
+| Notificaciones | Alarmas |
+| Grabación de pantalla y audio del sistema | El waveform en vivo. Solo se procesan niveles en memoria; nunca se graba ni se guarda audio. |
+| Cámara | Solo al activar el espejo manualmente |
+| Automatización (Spotify, Chrome, Notes, System Events) | Respaldos de Now Playing, guardar notas, menú de AirPlay |
+
+**Todo el procesamiento ocurre localmente.** NotchDrop no envía nada a ningún servidor.
+
+---
+
+## Notas técnicas
+
+### Posición del notch
+La posición y el tamaño se leen del sistema en tiempo real (`NSScreen.auxiliaryTopLeftArea` / `auxiliaryTopRightArea` / `safeAreaInsets`), nunca de valores fijos. Esto importa porque **el tamaño del notch en puntos cambia con el escalado de pantalla**, no solo con el modelo de Mac. También se recalcula al conectar/desconectar monitores o al despertar la Mac.
+
+### Dependencia de MediaRemote
+Now Playing universal usa `MediaRemote.framework`, un framework privado no documentado de Apple. En macOS 15.4+ ya no es accesible directamente desde apps de terceros, así que se incluye un puente ([MediaRemoteAdapter](third-party/MediaRemoteAdapter), de Jonas van den Berg, BSD-3-Clause) que hace esas llamadas vía Perl. Si Apple lo cambia, NotchDrop cae automáticamente a los respaldos de AppleScript.
+
+Por esa API privada **esta app no puede publicarse en la Mac App Store**, que además exige sandbox — incompatible con ejecutar `yt-dlp`/`ffmpeg` y con capturar audio del sistema. La distribución directa es la ruta correcta para esta categoría de herramienta.
+
+### TikTok
+El reto anti-bot de TikTok es no determinista: en pruebas repetidas del mismo link, alrededor de 1 de cada 5 intentos funciona. La app usa la API de la app móvil (`app_info`) y **reintenta automáticamente hasta 6 veces**, lo que sube la tasa de éxito a ~74 %. Si activas las cookies del navegador en Ajustes, TikTok deja de funcionar — déjalas apagadas salvo que las necesites para contenido privado de otro sitio.
+
+---
+
+## Licencia
+
+MIT — ver [LICENSE](LICENSE). Incluye [MediaRemoteAdapter](third-party/MediaRemoteAdapter) bajo BSD-3-Clause.

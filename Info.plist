@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>NotchDrop</string>
+	<key>CFBundleExecutable</key>
+	<string>NotchDrop</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.marcelo.notchdrop</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>NotchDrop</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>3.9.1</string>
+	<key>CFBundleVersion</key>
+	<string>23</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>NotchDrop uses Apple Events for Apple Notes and the system sound menu.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>NotchDrop measures outgoing audio levels to animate the live Now Playing waveform. It does not record or save audio.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>NotchDrop uses the camera only when you turn on the mirror.</string>
+</dict>
+</plist>

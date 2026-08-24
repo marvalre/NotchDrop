@@ -1,0 +1,10 @@
+# Compiled app bundle and archives — rebuilt from source via build.sh,
+# and binaries don't belong in git. Ship them as GitHub Release assets.
+NotchDrop.app/
+*.zip
+*.dSYM/
+
+# Local build backups
+backups/
+
+.DS_Store

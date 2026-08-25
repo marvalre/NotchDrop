@@ -9,3 +9,6 @@ NotchDrop *.app/
 backups/
 
 .DS_Store
+
+# Local source snapshots (safety net for reverting)
+snapshots/

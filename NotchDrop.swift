@@ -1617,6 +1617,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     let alarmMinutesDefaultsKey = "NotchDropAlarmMinutes"
     var swSec = 0; var swOn = false; var swTimer: Timer?
     var clipboard: [ClipItem] = []
+    var clipboardExpanded = false
+    static let clipVisibleCollapsed = 3
     var lastPBCount = 0
     var globalClickMon: Any?
     var hotKeyRef: EventHotKeyRef?
@@ -1649,6 +1651,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     var notesTabBtn: NSButton!
     var settingsBtn: NSButton!
     var convertTabBtn: NSButton!
+    var currencyTabBtn: NSButton!
 
     // Containers
     var nookContainer: NSView!
@@ -1657,6 +1660,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     var notesContainer: NSView!
     var settingsContainer: NSView!
     var convertContainer: NSView!
+    var currencyContainer: NSView!
+
+    // Currency tab
+    var currencyAmountField: NSTextField!
+    var currencyFromPopup: NSPopUpButton!
+    var currencyToPopup: NSPopUpButton!
+    var currencyResultLabel: NSTextField!
+    var currencyStatusLabel: NSTextField!
+    var currencyRatesCache: [String: (rate: Double, date: String)] = [:]
+    var currencyRequestInFlight = false
+    static let currencyCodes = [
+        "USD", "EUR", "GBP", "CHF", "JPY", "CNY", "CAD", "AUD", "MXN", "BRL",
+        "INR", "KRW", "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "RON", "TRY",
+        "ZAR", "SGD", "HKD", "NZD", "ILS", "PHP", "THB", "IDR", "MYR", "ISK",
+    ]
 
     // Converter tab
     var convChooseBtn: NSButton!
@@ -1754,14 +1772,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // read as "not a native Mac app" at a glance.
     func tabBtn(_ symbol: String, _ title: String, tag: Int, action: Selector) -> NSButton {
         let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+        let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
         let b = NSButton(title: title, target: self, action: action)
         b.image = img?.withSymbolConfiguration(cfg)
         b.imagePosition = .imageLeading
         b.imageHugsTitle = true
         b.isBordered = false
         b.tag = tag
-        b.font = .systemFont(ofSize: 12, weight: .medium)
+        // Trimmed from 12: a 6th tab (Currency) pushed the bar close to the gear
+        // icon at the smallest panel-size setting (0.85x scale).
+        b.font = .systemFont(ofSize: 11, weight: .medium)
         b.translatesAutoresizingMaskIntoConstraints = false
         return b
     }
@@ -2334,11 +2354,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         toolsTabBtn = tabBtn("bolt.fill", "Tools", tag: 2, action: #selector(switchTab(_:)))
         notesTabBtn = tabBtn("note.text", "Notes", tag: 3, action: #selector(switchTab(_:)))
         convertTabBtn = tabBtn("arrow.triangle.2.circlepath", "Convert", tag: 4, action: #selector(switchTab(_:)))
+        currencyTabBtn = tabBtn("banknote", "Currency", tag: 5, action: #selector(switchTab(_:)))
 
-        let tabsStack = NSStackView(views: [nooksTabBtn, trayTabBtn, toolsTabBtn, notesTabBtn, convertTabBtn])
-        // Tightened from 20: five tabs plus the gear no longer fit at the smaller
+        let tabsStack = NSStackView(views: [nooksTabBtn, trayTabBtn, toolsTabBtn, notesTabBtn, convertTabBtn, currencyTabBtn])
+        // Tightened from 20: six tabs plus the gear no longer fit at the smaller
         // panel sizes otherwise.
-        tabsStack.spacing = 12; tabsStack.translatesAutoresizingMaskIntoConstraints = false
+        tabsStack.spacing = 10; tabsStack.translatesAutoresizingMaskIntoConstraints = false
         topBar.addSubview(tabsStack)
         NSLayoutConstraint.activate([
             tabsStack.leadingAnchor.constraint(equalTo: topBar.leadingAnchor),
@@ -2358,8 +2379,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         notesContainer = NSView(); notesContainer.translatesAutoresizingMaskIntoConstraints = false
         settingsContainer = NSView(); settingsContainer.translatesAutoresizingMaskIntoConstraints = false
         convertContainer = NSView(); convertContainer.translatesAutoresizingMaskIntoConstraints = false
+        currencyContainer = NSView(); currencyContainer.translatesAutoresizingMaskIntoConstraints = false
         trayContainer.isHidden = true; toolsContainer.isHidden = true; notesContainer.isHidden = true
-        settingsContainer.isHidden = true; convertContainer.isHidden = true
+        settingsContainer.isHidden = true; convertContainer.isHidden = true; currencyContainer.isHidden = true
 
         // Content is pinned to a FIXED size, centered — never to the panel's moving
         // edges. During the open/close animation the window is still narrow, so
@@ -2369,7 +2391,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // final size and letting expandedBox (which clips to its rounded bounds)
         // reveal it means the opening reads as center-outward, like the real
         // Dynamic Island.
-        for v in [nookContainer!, trayContainer!, toolsContainer!, notesContainer!, settingsContainer!, convertContainer!] {
+        for v in [nookContainer!, trayContainer!, toolsContainer!, notesContainer!, settingsContainer!, convertContainer!, currencyContainer!] {
             expandedBox.addSubview(v)
             let widthC = v.widthAnchor.constraint(equalToConstant: contentWidth)
             let heightC = v.heightAnchor.constraint(equalToConstant: contentHeight)
@@ -2390,6 +2412,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         buildNotesTab()
         buildSettingsTab()
         buildConvertTab()
+        buildCurrencyTab()
     }
 
     func buildNookTab() {
@@ -2832,7 +2855,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // 1. Clipboard (Moved to top)
         let ccard = makeCardView()
         let cl = lbl("📋 CLIPBOARD HISTORY", 14, .bold, NSColor.systemIndigo)
-        clipStackView = NSStackView(); clipStackView.orientation = .vertical; clipStackView.alignment = .leading; clipStackView.spacing = 8; clipStackView.translatesAutoresizingMaskIntoConstraints = false
+        clipStackView = NSStackView(); clipStackView.orientation = .vertical; clipStackView.alignment = .leading; clipStackView.distribution = .fill; clipStackView.spacing = 8; clipStackView.translatesAutoresizingMaskIntoConstraints = false
         ccard.addSubview(cl); ccard.addSubview(clipStackView)
         NSLayoutConstraint.activate([
             cl.topAnchor.constraint(equalTo: ccard.topAnchor, constant: 16), cl.leadingAnchor.constraint(equalTo: ccard.leadingAnchor, constant: 16),
@@ -3642,6 +3665,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         toolsTabBtn.contentTintColor = (sender.tag == 2) ? .white : C.textMuted
         notesTabBtn.contentTintColor = (sender.tag == 3) ? .white : C.textMuted
         convertTabBtn.contentTintColor = (sender.tag == 4) ? .white : C.textMuted
+        currencyTabBtn.contentTintColor = (sender.tag == 5) ? .white : C.textMuted
         settingsBtn.contentTintColor = C.textMuted
 
         nookContainer.isHidden = (sender.tag != 0)
@@ -3649,6 +3673,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         toolsContainer.isHidden = (sender.tag != 2)
         notesContainer.isHidden = (sender.tag != 3)
         convertContainer.isHidden = (sender.tag != 4)
+        currencyContainer.isHidden = (sender.tag != 5)
         settingsContainer.isHidden = true
 
         // Opening the Shelf right after copying a link is the whole workflow, so
@@ -3665,6 +3690,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         trayTabBtn.contentTintColor = C.textMuted
         toolsTabBtn.contentTintColor = C.textMuted
         notesTabBtn.contentTintColor = C.textMuted
+        convertTabBtn.contentTintColor = C.textMuted
+        currencyTabBtn.contentTintColor = C.textMuted
         settingsBtn.contentTintColor = .white
 
         nookContainer.isHidden = true
@@ -3672,6 +3699,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         toolsContainer.isHidden = true
         notesContainer.isHidden = true
         convertContainer.isHidden = true
+        currencyContainer.isHidden = true
         settingsContainer.isHidden = false
         audioStatusLabel?.stringValue = audioStatusText()
         notchDiagnosticLabel?.stringValue = notchDiagnosticText()
@@ -4519,7 +4547,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // the whole history is capped. Text costs effectively nothing by comparison.
     static let maxClipboardImageBytes = 12 * 1024 * 1024   // 12 MB per image
     static let maxClipboardTotalBytes = 30 * 1024 * 1024   // 30 MB across history
-    static let maxClipboardItems = 5
+    static let maxClipboardItems = 12
+    // How many rows show before the "Ver más" button appears. Kept separate from
+    // the storage cap: more history is useful, but showing all of it at once in a
+    // narrow panel is what made entries read as crowded/run-together.
 
     func pollClip() {
         let pb = NSPasteboard.general; guard pb.changeCount != lastPBCount else { return }; lastPBCount = pb.changeCount
@@ -4618,7 +4649,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             clipStackView.addArrangedSubview(lbl("Copia texto o una imagen para verlos aquí.", 10, .regular, C.textMuted))
             return
         }
-        for (i, c) in clipboard.enumerated() {
+        // Rendering every stored entry at once is what made rows read as crowded —
+        // collapse to a handful up front, with a button to reveal the rest on demand.
+        let visibleCount = clipboardExpanded ? clipboard.count : min(Self.clipVisibleCollapsed, clipboard.count)
+        for (i, c) in clipboard.prefix(visibleCount).enumerated() {
             let r = NSView(); r.translatesAutoresizingMaskIntoConstraints = false
             let b = NSButton(title: "Copy", target: self, action: #selector(copyClip(_:)))
             b.tag = i; b.bezelStyle = .recessed; b.controlSize = .mini
@@ -4636,7 +4670,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             let leading: NSView
             switch c.kind {
             case .text(let s):
-                let t = lbl(s, 10, .regular, C.textSecondary); t.maximumNumberOfLines = 1
+                let t = lbl(s, 10, .regular, C.textSecondary)
+                t.maximumNumberOfLines = 1
+                t.cell?.wraps = false
+                t.cell?.isScrollable = false
+                t.cell?.usesSingleLineMode = true
+                t.setContentHuggingPriority(.required, for: .vertical)
                 leading = t
             case .image(let data, _):
                 let row = NSView(); row.translatesAutoresizingMaskIntoConstraints = false
@@ -4677,6 +4716,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             ])
             clipStackView.addArrangedSubview(r); r.widthAnchor.constraint(equalTo: clipStackView.widthAnchor).isActive = true
         }
+        if clipboard.count > Self.clipVisibleCollapsed {
+            let remaining = clipboard.count - visibleCount
+            let title = clipboardExpanded ? "Ver menos" : "Ver más (\(remaining))"
+            let toggle = NSButton(title: title, target: self, action: #selector(toggleClipExpanded))
+            toggle.bezelStyle = .recessed; toggle.controlSize = .mini
+            toggle.translatesAutoresizingMaskIntoConstraints = false
+            clipStackView.addArrangedSubview(toggle)
+            toggle.widthAnchor.constraint(equalTo: clipStackView.widthAnchor).isActive = true
+        }
+    }
+
+    @objc func toggleClipExpanded() {
+        clipboardExpanded.toggle()
+        updateClipUI()
     }
 
     @objc func copyClip(_ sender: NSButton) {
@@ -4734,6 +4787,162 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             saveBtn.bottomAnchor.constraint(equalTo: notesContainer.bottomAnchor, constant: -16),
             saveBtn.centerXAnchor.constraint(equalTo: notesContainer.centerXAnchor)
         ])
+    }
+
+    func buildCurrencyTab() {
+        let titleLbl = lbl("Currency", 16, .bold, C.textPrimary)
+        titleLbl.translatesAutoresizingMaskIntoConstraints = false
+        currencyContainer.addSubview(titleLbl)
+
+        currencyAmountField = NSTextField()
+        currencyAmountField.stringValue = "1"
+        currencyAmountField.font = .systemFont(ofSize: 22, weight: .medium)
+        currencyAmountField.textColor = C.textPrimary
+        currencyAmountField.alignment = .center
+        currencyAmountField.isBordered = false
+        currencyAmountField.drawsBackground = false
+        currencyAmountField.focusRingType = .none
+        currencyAmountField.target = self
+        currencyAmountField.action = #selector(runCurrencyConversion)
+        currencyAmountField.translatesAutoresizingMaskIntoConstraints = false
+        currencyContainer.addSubview(currencyAmountField)
+
+        currencyFromPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        currencyToPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        for p in [currencyFromPopup!, currencyToPopup!] {
+            p.addItems(withTitles: Self.currencyCodes)
+            p.controlSize = .small
+            p.target = self
+            p.action = #selector(runCurrencyConversion)
+            p.translatesAutoresizingMaskIntoConstraints = false
+            currencyContainer.addSubview(p)
+        }
+        currencyFromPopup.selectItem(withTitle: "USD")
+        currencyToPopup.selectItem(withTitle: "EUR")
+
+        let swapBtn = NSButton(image: NSImage(systemSymbolName: "arrow.left.arrow.right", accessibilityDescription: "Swap")!, target: self, action: #selector(swapCurrencies))
+        swapBtn.bezelStyle = .inline; swapBtn.isBordered = false
+        swapBtn.contentTintColor = C.textMuted
+        swapBtn.translatesAutoresizingMaskIntoConstraints = false
+        currencyContainer.addSubview(swapBtn)
+
+        currencyResultLabel = lbl("—", 24, .bold, C.textPrimary)
+        currencyResultLabel.alignment = .center
+        currencyResultLabel.maximumNumberOfLines = 1
+        currencyResultLabel.translatesAutoresizingMaskIntoConstraints = false
+        currencyContainer.addSubview(currencyResultLabel)
+
+        currencyStatusLabel = lbl("", 10, .regular, C.textMuted)
+        currencyStatusLabel.alignment = .center
+        currencyStatusLabel.maximumNumberOfLines = 1
+        currencyStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+        currencyContainer.addSubview(currencyStatusLabel)
+
+        NSLayoutConstraint.activate([
+            titleLbl.topAnchor.constraint(equalTo: currencyContainer.topAnchor, constant: 8),
+            titleLbl.centerXAnchor.constraint(equalTo: currencyContainer.centerXAnchor),
+
+            currencyAmountField.topAnchor.constraint(equalTo: titleLbl.bottomAnchor, constant: 14),
+            currencyAmountField.centerXAnchor.constraint(equalTo: currencyContainer.centerXAnchor),
+            currencyAmountField.widthAnchor.constraint(equalToConstant: 120),
+
+            currencyFromPopup.topAnchor.constraint(equalTo: currencyAmountField.bottomAnchor, constant: 14),
+            currencyFromPopup.trailingAnchor.constraint(equalTo: swapBtn.leadingAnchor, constant: -10),
+            currencyFromPopup.widthAnchor.constraint(equalToConstant: 90),
+
+            swapBtn.centerYAnchor.constraint(equalTo: currencyFromPopup.centerYAnchor),
+            swapBtn.centerXAnchor.constraint(equalTo: currencyContainer.centerXAnchor),
+
+            currencyToPopup.centerYAnchor.constraint(equalTo: currencyFromPopup.centerYAnchor),
+            currencyToPopup.leadingAnchor.constraint(equalTo: swapBtn.trailingAnchor, constant: 10),
+            currencyToPopup.widthAnchor.constraint(equalToConstant: 90),
+
+            currencyResultLabel.topAnchor.constraint(equalTo: currencyFromPopup.bottomAnchor, constant: 20),
+            currencyResultLabel.leadingAnchor.constraint(equalTo: currencyContainer.leadingAnchor, constant: 16),
+            currencyResultLabel.trailingAnchor.constraint(equalTo: currencyContainer.trailingAnchor, constant: -16),
+
+            currencyStatusLabel.topAnchor.constraint(equalTo: currencyResultLabel.bottomAnchor, constant: 6),
+            currencyStatusLabel.centerXAnchor.constraint(equalTo: currencyContainer.centerXAnchor),
+        ])
+
+        runCurrencyConversion()
+    }
+
+    @objc func swapCurrencies() {
+        let fromTitle = currencyFromPopup.titleOfSelectedItem
+        let toTitle = currencyToPopup.titleOfSelectedItem
+        currencyFromPopup.selectItem(withTitle: toTitle ?? "EUR")
+        currencyToPopup.selectItem(withTitle: fromTitle ?? "USD")
+        runCurrencyConversion()
+    }
+
+    @objc func runCurrencyConversion() {
+        guard let from = currencyFromPopup.titleOfSelectedItem, let to = currencyToPopup.titleOfSelectedItem else { return }
+        let amount = Double(currencyAmountField.stringValue.replacingOccurrences(of: ",", with: ".")) ?? 0
+
+        if from == to {
+            currencyResultLabel.stringValue = formatCurrencyAmount(amount, code: to)
+            currencyStatusLabel.stringValue = "Misma moneda"
+            return
+        }
+
+        if let cached = currencyRatesCache["\(from)_\(to)"] {
+            currencyResultLabel.stringValue = formatCurrencyAmount(amount * cached.rate, code: to)
+            currencyStatusLabel.stringValue = "1 \(from) = \(String(format: "%.4f", cached.rate)) \(to) · \(cached.date)"
+        } else {
+            currencyStatusLabel.stringValue = "Cargando tasas…"
+        }
+        fetchCurrencyRate(from: from, to: to) { [weak self] rate, date in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                // The user may have changed the pickers or the amount while the
+                // request was in flight — only apply the result if it's still current.
+                guard self.currencyFromPopup.titleOfSelectedItem == from, self.currencyToPopup.titleOfSelectedItem == to else { return }
+                guard let rate else {
+                    self.currencyStatusLabel.stringValue = "Sin conexión — no se pudo actualizar la tasa"
+                    return
+                }
+                self.currencyRatesCache["\(from)_\(to)"] = (rate, date)
+                let liveAmount = Double(self.currencyAmountField.stringValue.replacingOccurrences(of: ",", with: ".")) ?? 0
+                self.currencyResultLabel.stringValue = self.formatCurrencyAmount(liveAmount * rate, code: to)
+                self.currencyStatusLabel.stringValue = "1 \(from) = \(String(format: "%.4f", rate)) \(to) · \(date)"
+            }
+        }
+    }
+
+    func formatCurrencyAmount(_ value: Double, code: String) -> String {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.minimumFractionDigits = 2
+        f.maximumFractionDigits = 2
+        let number = f.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value)
+        return "\(number) \(code)"
+    }
+
+    struct FrankfurterResponse: Decodable {
+        let date: String
+        let rates: [String: Double]
+    }
+
+    // Frankfurter.app: free, no API key, ECB-sourced daily rates. Fails closed —
+    // a network error just leaves the cached rate (if any) on screen instead of
+    // crashing or blocking the UI.
+    func fetchCurrencyRate(from: String, to: String, completion: @escaping (Double?, String) -> Void) {
+        guard let url = URL(string: "https://api.frankfurter.app/latest?from=\(from)&to=\(to)") else {
+            completion(nil, "")
+            return
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 8
+        URLSession.shared.dataTask(with: request) { data, _, error in
+            guard let data, error == nil,
+                  let decoded = try? JSONDecoder().decode(FrankfurterResponse.self, from: data),
+                  let rate = decoded.rates[to] else {
+                completion(nil, "")
+                return
+            }
+            completion(rate, decoded.date)
+        }.resume()
     }
 
     @objc func saveNote() {

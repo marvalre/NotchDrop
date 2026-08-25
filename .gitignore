@@ -1,6 +1,7 @@
 # Compiled app bundle and archives — rebuilt from source via build.sh,
 # and binaries don't belong in git. Ship them as GitHub Release assets.
 NotchDrop.app/
+NotchDrop *.app/
 *.zip
 *.dSYM/
 

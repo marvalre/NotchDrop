@@ -38,6 +38,9 @@ En Macs **sin** notch físico dibuja uno simulado, así que funciona en cualquie
 ### 📝 Notes
 Captura rápida directo a Apple Notes.
 
+### 💵 Currency
+Conversor de divisas en vivo — 30 monedas (USD, EUR, GBP, CHF, JPY, MXN, etc.), tasas reales vía [Frankfurter.app](https://www.frankfurter.app) (fuente BCE, sin API key). Escribe un monto, elige origen/destino, y hay un botón para invertir el par. Las tasas se cachean por par mientras el panel está abierto para no repetir la consulta en cada tecla.
+
 ### ⚙️ Ajustes
 Auto-inicio, apertura por hover, tamaño del panel, diagnóstico del notch, persistencia del portapapeles, configuración del descargador y tutorial.
 
@@ -47,6 +50,8 @@ Auto-inicio, apertura por hover, tamaño del panel, diagnóstico del notch, pers
 ---
 
 ## Instalación
+
+> ¿Solo quieres instalarlo, sin tecnicismos? Usa [INSTALL.md](INSTALL.md).
 
 ### Desde el código
 

@@ -39,7 +39,9 @@ En Macs **sin** notch físico dibuja uno simulado, así que funciona en cualquie
 Captura rápida directo a Apple Notes.
 
 ### 💵 Currency
-Conversor de divisas en vivo — 30 monedas (USD, EUR, GBP, CHF, JPY, MXN, etc.), tasas reales vía [Frankfurter.app](https://www.frankfurter.app) (fuente BCE, sin API key). Escribe un monto, elige origen/destino, y hay un botón para invertir el par. Las tasas se cachean por par mientras el panel está abierto para no repetir la consulta en cada tecla.
+Conversor de divisas **y calculadora** — 30 monedas (USD, EUR, GBP, CHF, JPY, MXN, etc.), tasas reales vía [Frankfurter.app](https://www.frankfurter.app) (fuente BCE, sin API key).
+
+El campo de monto acepta operaciones: escribe `19.99*3` o `(1200+800)/2` y convierte el resultado, mostrando la operación resuelta. Se actualiza mientras escribes, sin dar Enter. Hay un botón para invertir el par, y las tasas se reutilizan durante el día para no repetir consultas.
 
 ### ⚙️ Ajustes
 Auto-inicio, apertura por hover, tamaño del panel, diagnóstico del notch, persistencia del portapapeles, configuración del descargador y tutorial.

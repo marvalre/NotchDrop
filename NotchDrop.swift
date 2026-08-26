@@ -1529,7 +1529,7 @@ class OnboardingOverlayView: NSView {
 // ═══════════════════════════════════════════════════════════════════════════
 // MARK: - AppDelegate
 // ═══════════════════════════════════════════════════════════════════════════
-class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSTextFieldDelegate {
 
     // ── Window & Dimensions ──
     var panel: NotchPanel!
@@ -1669,7 +1669,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     var currencyResultLabel: NSTextField!
     var currencyStatusLabel: NSTextField!
     var currencyRatesCache: [String: (rate: Double, date: String)] = [:]
-    var currencyRequestInFlight = false
+    var currencyPairsInFlight: Set<String> = []
+    static let currencyDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.timeZone = TimeZone(identifier: "UTC")   // matches Frankfurter's "date" field
+        return f
+    }()
     static let currencyCodes = [
         "USD", "EUR", "GBP", "CHF", "JPY", "CNY", "CAD", "AUD", "MXN", "BRL",
         "INR", "KRW", "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "RON", "TRY",
@@ -4789,6 +4795,107 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         ])
     }
 
+    // Evaluates the amount field, which doubles as a small calculator: "25*4"
+    // converts 100. Deliberately hand-rolled instead of NSExpression, which
+    // raises an Objective-C exception on malformed input — Swift cannot catch
+    // those, so typing a half-finished "5*" would take the whole app down.
+    // Returns nil for anything it can't evaluate; the caller treats that as
+    // "no amount yet" rather than an error.
+    func evaluateArithmetic(_ input: String) -> Double? {
+        // Accept both decimal separators — people type "1,5" as readily as "1.5".
+        let normalized = input.replacingOccurrences(of: ",", with: ".")
+
+        enum Token: Equatable { case number(Double), plus, minus, times, divide, lparen, rparen }
+        var tokens: [Token] = []
+        let chars = Array(normalized)
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if c == " " || c == "\t" { i += 1; continue }
+            if c.isNumber || c == "." {
+                var literal = ""
+                var sawDot = false
+                while i < chars.count, chars[i].isNumber || chars[i] == "." {
+                    if chars[i] == "." {
+                        if sawDot { return nil }
+                        sawDot = true
+                    }
+                    literal.append(chars[i]); i += 1
+                }
+                guard let value = Double(literal), value.isFinite else { return nil }
+                tokens.append(.number(value))
+                continue
+            }
+            switch c {
+            case "+": tokens.append(.plus)
+            case "-": tokens.append(.minus)
+            case "*", "\u{00D7}": tokens.append(.times)
+            case "/", "\u{00F7}": tokens.append(.divide)
+            case "(": tokens.append(.lparen)
+            case ")": tokens.append(.rparen)
+            default: return nil
+            }
+            i += 1
+        }
+        guard !tokens.isEmpty else { return nil }
+
+        var pos = 0
+        func peek() -> Token? { pos < tokens.count ? tokens[pos] : nil }
+
+        func parseFactor() -> Double? {
+            guard let t = peek() else { return nil }
+            switch t {
+            case .minus:
+                pos += 1
+                guard let v = parseFactor() else { return nil }
+                return -v
+            case .plus:
+                pos += 1
+                return parseFactor()
+            case .number(let v):
+                pos += 1
+                return v
+            case .lparen:
+                pos += 1
+                guard let v = parseExpression() else { return nil }
+                guard peek() == .rparen else { return nil }
+                pos += 1
+                return v
+            default:
+                return nil
+            }
+        }
+        func parseTerm() -> Double? {
+            guard var acc = parseFactor() else { return nil }
+            while let t = peek(), t == .times || t == .divide {
+                pos += 1
+                guard let rhs = parseFactor() else { return nil }
+                if t == .divide {
+                    guard rhs != 0 else { return nil }
+                    acc /= rhs
+                } else {
+                    acc *= rhs
+                }
+                guard acc.isFinite else { return nil }
+            }
+            return acc
+        }
+        func parseExpression() -> Double? {
+            guard var acc = parseTerm() else { return nil }
+            while let t = peek(), t == .plus || t == .minus {
+                pos += 1
+                guard let rhs = parseTerm() else { return nil }
+                acc = (t == .plus) ? acc + rhs : acc - rhs
+                guard acc.isFinite else { return nil }
+            }
+            return acc
+        }
+
+        guard let result = parseExpression() else { return nil }
+        guard pos == tokens.count, result.isFinite else { return nil }
+        return result
+    }
+
     func buildCurrencyTab() {
         let titleLbl = lbl("Currency", 16, .bold, C.textPrimary)
         titleLbl.translatesAutoresizingMaskIntoConstraints = false
@@ -4804,6 +4911,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         currencyAmountField.focusRingType = .none
         currencyAmountField.target = self
         currencyAmountField.action = #selector(runCurrencyConversion)
+        currencyAmountField.delegate = self
         currencyAmountField.translatesAutoresizingMaskIntoConstraints = false
         currencyContainer.addSubview(currencyAmountField)
 
@@ -4876,36 +4984,81 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         runCurrencyConversion()
     }
 
-    @objc func runCurrencyConversion() {
+    // Live-updates the conversion as the user types. Deliberately calls the
+    // local-only recompute: hitting the network per keystroke would fire four
+    // requests for "1000".
+    func controlTextDidChange(_ obj: Notification) {
+        guard let field = obj.object as? NSTextField, field === currencyAmountField else { return }
+        updateCurrencyDisplay()
+    }
+
+    // Recomputes the displayed result from whatever rate is already cached.
+    // Purely local — safe to call on every keystroke.
+    func updateCurrencyDisplay() {
         guard let from = currencyFromPopup.titleOfSelectedItem, let to = currencyToPopup.titleOfSelectedItem else { return }
-        let amount = Double(currencyAmountField.stringValue.replacingOccurrences(of: ",", with: ".")) ?? 0
+        let typed = currencyAmountField.stringValue
+        guard let amount = evaluateArithmetic(typed) else {
+            // Half-typed expressions land here constantly ("25*"), so this is a
+            // neutral hint, not an error state.
+            currencyResultLabel.stringValue = "—"
+            currencyStatusLabel.stringValue = typed.trimmingCharacters(in: .whitespaces).isEmpty
+                ? "Escribe un monto — también acepta operaciones como 25*4"
+                : "No se puede calcular «\(typed)»"
+            return
+        }
+        // When the field held an actual operation, echo what it resolved to so
+        // it's clear which number got converted. A plain "25" needs no echo.
+        let trimmed = typed.trimmingCharacters(in: .whitespaces)
+        let hasOperator = trimmed.dropFirst().rangeOfCharacter(from: CharacterSet(charactersIn: "+-*/×÷()")) != nil
+        let mathNote = hasOperator ? "\(trimmed) = \(formatCurrencyAmount(amount, code: from)) · " : ""
 
         if from == to {
             currencyResultLabel.stringValue = formatCurrencyAmount(amount, code: to)
-            currencyStatusLabel.stringValue = "Misma moneda"
+            currencyStatusLabel.stringValue = "\(mathNote)Misma moneda"
             return
         }
-
         if let cached = currencyRatesCache["\(from)_\(to)"] {
             currencyResultLabel.stringValue = formatCurrencyAmount(amount * cached.rate, code: to)
-            currencyStatusLabel.stringValue = "1 \(from) = \(String(format: "%.4f", cached.rate)) \(to) · \(cached.date)"
+            currencyStatusLabel.stringValue = "\(mathNote)1 \(from) = \(String(format: "%.4f", cached.rate)) \(to) · \(cached.date)"
         } else {
-            currencyStatusLabel.stringValue = "Cargando tasas…"
+            currencyResultLabel.stringValue = "—"
+            currencyStatusLabel.stringValue = "\(mathNote)Cargando tasas…"
         }
+    }
+
+    // Updates the display, then refreshes the rate over the network if needed.
+    // Only called on picker/swap/Enter — never per keystroke, so typing "1000"
+    // doesn't fire four requests.
+    @objc func runCurrencyConversion() {
+        updateCurrencyDisplay()
+        guard let from = currencyFromPopup.titleOfSelectedItem, let to = currencyToPopup.titleOfSelectedItem,
+              from != to else { return }
+        let pair = "\(from)_\(to)"
+        // Rates are published once a day, so a same-day cached rate needs no
+        // refetch. This also collapses repeated Enter presses into one request.
+        let today = Self.currencyDayFormatter.string(from: Date())
+        if let cached = currencyRatesCache[pair], cached.date == today { return }
+        guard !currencyPairsInFlight.contains(pair) else { return }
+        currencyPairsInFlight.insert(pair)
+
         fetchCurrencyRate(from: from, to: to) { [weak self] rate, date in
-            guard let self else { return }
             DispatchQueue.main.async {
-                // The user may have changed the pickers or the amount while the
-                // request was in flight — only apply the result if it's still current.
-                guard self.currencyFromPopup.titleOfSelectedItem == from, self.currencyToPopup.titleOfSelectedItem == to else { return }
+                guard let self else { return }
+                self.currencyPairsInFlight.remove(pair)
                 guard let rate else {
-                    self.currencyStatusLabel.stringValue = "Sin conexión — no se pudo actualizar la tasa"
+                    // Keep any cached figure on screen; just say it may be stale.
+                    if self.currencyFromPopup.titleOfSelectedItem == from,
+                       self.currencyToPopup.titleOfSelectedItem == to {
+                        self.currencyStatusLabel.stringValue = "Sin conexión — no se pudo actualizar la tasa"
+                    }
                     return
                 }
-                self.currencyRatesCache["\(from)_\(to)"] = (rate, date)
-                let liveAmount = Double(self.currencyAmountField.stringValue.replacingOccurrences(of: ",", with: ".")) ?? 0
-                self.currencyResultLabel.stringValue = self.formatCurrencyAmount(liveAmount * rate, code: to)
-                self.currencyStatusLabel.stringValue = "1 \(from) = \(String(format: "%.4f", rate)) \(to) · \(date)"
+                self.currencyRatesCache[pair] = (rate, date)
+                // Only repaint if the user hasn't switched to a different pair
+                // while the request was in flight.
+                guard self.currencyFromPopup.titleOfSelectedItem == from,
+                      self.currencyToPopup.titleOfSelectedItem == to else { return }
+                self.updateCurrencyDisplay()
             }
         }
     }

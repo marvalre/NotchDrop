@@ -18,6 +18,21 @@ También hay copias completas del código fuente en `snapshots/` (fuera de git) 
 
 ---
 
+## v3.11.0 — La pestaña Currency ahora es calculadora
+
+**Agregado**
+- El campo de monto acepta **operaciones**: escribe `25*4`, `1200/3`, `(1200+800)/2` o `50*1.16` y convierte el resultado. El estado de abajo muestra la operación resuelta, p. ej. `19.99*3 = 59.97 USD`.
+- El resultado se **actualiza mientras escribes**, sin tener que dar Enter.
+
+**Arreglado**
+- Escribir en el campo ya no dispara una consulta de red por cada tecla. El cálculo es local; la tasa solo se pide al cambiar de moneda o al dar Enter, y se reutiliza si ya se descargó ese mismo día.
+- Si se pierde la conexión, se conserva en pantalla la última tasa conocida en vez de borrar el resultado.
+
+**Nota técnica**
+La calculadora usa un parser propio en vez de `NSExpression`. `NSExpression` lanza excepciones de Objective-C con entrada malformada, y Swift no las puede atrapar: escribir un `5*` a medias habría cerrado la app. El parser devuelve "sin resultado" en su lugar. Está cubierto por 35 pruebas, incluyendo división entre cero, paréntesis sin cerrar e intentos de inyección.
+
+---
+
 ## v3.10.0 — Currency + portapapeles paginado
 
 **Agregado**

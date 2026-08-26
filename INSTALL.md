@@ -10,21 +10,23 @@ Descarga `NotchDrop-3.10.0.zip` (o el que te hayan compartido) y ábrelo haciend
 
 Arrastra `NotchDrop.app` a tu carpeta **Aplicaciones**.
 
-## 3. Ábrela (el primer clic derecho es obligatorio)
+## 3. Autorízala la primera vez
 
-Como esta app no viene de la App Store ni de un desarrollador pagado de Apple, macOS te va a advertir "no se puede verificar" o "desarrollador no identificado" la primera vez. Es normal en apps de código abierto — así se evita:
+Como esta app no viene de la App Store ni de un desarrollador pagado de Apple, macOS la bloquea la primera vez con un aviso de "no se pudo verificar". Es normal en software de código abierto.
 
-1. En **Aplicaciones**, haz **clic derecho (o Control + clic)** sobre `NotchDrop.app`.
-2. Elige **Abrir**.
-3. Aparece una alerta — pulsa **Abrir** de nuevo.
+**En macOS 15 (Sequoia) y más nuevo**, el aviso solo ofrece **"Mover al basurero"** y **"Listo"** — no hay botón para abrirla. No la borres:
 
-Después de este primer paso, la app abre normal con doble clic siempre.
+1. Pulsa **Listo**.
+2. Abre **Configuración del Sistema → Privacidad y Seguridad**.
+3. Baja hasta el final, a la sección **Seguridad**. Ahí aparece *"NotchDrop fue bloqueada para proteger tu Mac"* con un botón **Abrir de todos modos**.
+4. Púlsalo y confirma con tu contraseña o Touch ID.
+5. Abre `NotchDrop.app` otra vez. Ya funciona.
 
-> **Si ves "No se abrió NotchDrop" con solo los botones "Mover al basurero" / "Listo"** (sin opción de abrir) — esto pasa en macOS Sonoma/Sequoia si se abrió con doble clic directo en vez de clic derecho. Solución:
-> 1. Pulsa **Listo** (no borres el archivo).
-> 2. Ve a **Configuración del Sistema → Privacidad y Seguridad**.
-> 3. Baja hasta **Seguridad** — ahí aparece el aviso de NotchDrop con un botón **Abrir de todos modos**. Púlsalo y confirma con tu contraseña o Touch ID.
-> 4. Abre `NotchDrop.app` de nuevo — ahora sí aparece un botón para abrirla, y de ahí en adelante abre normal.
+Después de esto, la app abre normal con doble clic siempre.
+
+> **Nota sobre el truco del clic derecho:** en versiones anteriores de macOS bastaba con hacer clic derecho sobre la app y elegir "Abrir". **Apple eliminó ese atajo**; en macOS 15+ el menú sigue mostrando "Abrir" pero el bloqueo aparece igual. El único camino es el de Configuración del Sistema descrito arriba.
+>
+> En **macOS 13 y 14** el clic derecho → Abrir todavía funciona, y el aviso sí incluye un botón "Abrir".
 
 ## 4. Permisos que te va a pedir
 

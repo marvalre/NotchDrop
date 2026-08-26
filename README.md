@@ -66,9 +66,11 @@ cp -R NotchDrop.app /Applications/
 
 ### Desde una release
 
-Descarga el `.app`, muévelo a `/Applications` y **haz clic derecho → Abrir** la primera vez.
+Descarga el `.app` y muévelo a `/Applications`. La primera vez macOS lo bloqueará: ve a **Configuración del Sistema → Privacidad y Seguridad**, baja hasta **Seguridad** y pulsa **Abrir de todos modos**.
 
-> Ese paso extra es porque la app no está *notarizada* con una cuenta Apple Developer de pago. macOS avisará "desarrollador no identificado". Es normal en herramientas open source; solo pasa la primera vez.
+> Ese paso extra es porque la app no está *notarizada* con una cuenta Apple Developer de pago. Es normal en herramientas open source; solo pasa la primera vez.
+>
+> En macOS 15 (Sequoia) y más nuevo, el aviso solo ofrece "Mover al basurero" y "Listo" — **el viejo truco de clic derecho → Abrir ya no evita el bloqueo**, Apple lo eliminó. Guía paso a paso con capturas: [INSTALL.md](INSTALL.md).
 
 ---
 

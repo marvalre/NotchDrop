@@ -3,7 +3,6 @@
 Cada versión está marcada con un tag de git. Para volver a una versión anterior:
 
 ```bash
-cd "/Users/marcelo/M Visuals/Proyectos/NotchDrop"
 git checkout v3.9.1      # ver esa versión
 git checkout main        # volver a la actual
 ```
@@ -14,7 +13,13 @@ Para revertir **permanentemente** a una versión anterior (con cuidado — pierd
 git reset --hard v3.9.1
 ```
 
-También hay copias completas del código fuente en `snapshots/` (fuera de git) y del `.app` compilado en `backups/`, por si quieres recuperar algo sin tocar git.
+---
+
+## v3.11.1 — Se acabó el "clic fantasma" del trackpad
+
+**Arreglado**
+- Pasar el mouse por el notch hacía que el trackpad se sintiera y sonara como si hubieras hecho clic, sin haberlo hecho. La app disparaba el motor háptico del trackpad (`NSHapticFeedbackManager`) cada vez que el panel se abría o cerraba — y como el hover usa esa misma ruta, bastaba con acercar el cursor. Lo mismo pasaba al alejarse, y al salir el mouse del panel abierto.
+- Ahora el háptico solo responde a acciones deliberadas: clic en la píldora del notch o el atajo ⌥⌘N. Abrir por hover, cerrar por alejarse, soltar archivos, cambiar de pantalla o el cierre automático son silenciosos.
 
 ---
 

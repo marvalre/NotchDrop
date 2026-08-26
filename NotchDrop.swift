@@ -1903,7 +1903,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         mainView = PanelBackgroundView()
         panel.contentView = mainView
         (mainView as? PanelBackgroundView)?.onMouseExit = { [weak self] in
-            if self?.isExpanded == true && self?.isReceivingFileDrag == false { self?.toggleExpandedState() }
+            // Auto-collapse on mouse-out: passive, so no haptic. (Went through
+            // toggleExpandedState before, which made the trackpad click itself
+            // every time the cursor drifted off the panel.)
+            if self?.isExpanded == true && self?.isReceivingFileDrag == false { self?.collapsePanel() }
         }
         (mainView as? PanelBackgroundView)?.onDragEnter = { [weak self] in
             self?.prepareShelfForDrop()
@@ -3716,16 +3719,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // MARK: - Expand / Collapse
     // ═══════════════════════════════════════════════════════════════════
 
-    @objc func toggleExpandedState() { if isExpanded { collapsePanel() } else { expandPanel() } }
+    // Deliberate user actions — the two places haptic feedback is wanted.
+    @objc func toggleExpandedState() {
+        if isExpanded { collapsePanel(withHaptic: true) } else { expandPanel(withHaptic: true) }
+    }
     @objc func collapsedBoxClicked() {
         guard !isExpanded, !isTransitioning else { return }
-        expandPanel()
+        expandPanel(withHaptic: true)
     }
-    func expandPanel(forFileDrop: Bool = false) {
+    // `withHaptic` defaults to OFF and must be opted into by deliberate user
+    // actions only (clicking the pill, the ⌥⌘N hotkey). It used to fire
+    // unconditionally, which meant hover-to-open actuated the Force Touch
+    // trackpad's haptic engine just from moving the cursor over the notch —
+    // indistinguishable from a phantom click, sound and all.
+    func expandPanel(forFileDrop: Bool = false, withHaptic: Bool = false) {
         guard !isExpanded, !isTransitioning else { return }
         // A no-op on anything without a Force Touch trackpad (external mouse,
         // older trackpads) — safe to call unconditionally.
-        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        if withHaptic {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
         isExpanded = true; collapsedBox.isHidden = true; expandedBox.isHidden = false; expandedBox.alphaValue = 0
         let tr = getPanelRect(expanded: true)
         if forFileDrop {
@@ -3766,9 +3779,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
         globalClickMon = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in self?.collapsePanel() }
     }
-    func collapsePanel() {
+    // Same opt-in rule as expandPanel: auto-collapse (mouse moved away, screen
+    // changed, clicked elsewhere) must stay silent.
+    func collapsePanel(withHaptic: Bool = false) {
         guard isExpanded, !isTransitioning else { return }
-        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        if withHaptic {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
         isExpanded = false; if let m = globalClickMon { NSEvent.removeMonitor(m); globalClickMon = nil }
         if mirrorActive { stopMirrorCamera() }
         onboardingOverlay?.removeFromSuperview(); onboardingOverlay = nil

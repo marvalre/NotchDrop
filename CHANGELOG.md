@@ -15,6 +15,21 @@ git reset --hard v3.9.1
 
 ---
 
+## v3.12.0 — Impuesto en Currency + arreglo de layout
+
+**Agregado**
+- Checkbox de **Impuesto** en la pestaña Currency: apagado por defecto (no cambia nada si no lo activas). Al marcarlo aparece un campo de porcentaje prellenado con **16** (editable a cualquier valor 0–100), que suma ese impuesto al monto antes o después de convertir moneda — el resultado es el mismo matemáticamente. El desglose se muestra en el texto de estado, por ejemplo `59.97 USD +16% = 69.57 USD · 1 USD = 0.92 EUR`.
+
+**Arreglado**
+- La pestaña Currency se compactó (fuentes y espaciados más chicos, monto e impuesto comparten fila) para que quepa completa sin necesitar scroll, incluso en el tamaño de panel más pequeño (0.85x) — donde antes el resultado quedaba invisible debajo del borde del panel al activar el impuesto.
+- Como respaldo silencioso, el contenido de Currency ahora vive en un scroll view (mismo patrón que Notes), así que un desborde futuro nunca vuelve a ocultar contenido sin aviso.
+
+**Verificación**
+- 14 pruebas unitarias para el parseo del porcentaje de impuesto (válidos, negativos, con coma decimal, con símbolo %, vacío) antes de integrarlo.
+- Verificado en la app real a escala 0.85 (el peor caso), confirmando que el resultado ya no se corta.
+
+---
+
 ## v3.11.1 — Se acabó el "clic fantasma" del trackpad
 
 **Arreglado**

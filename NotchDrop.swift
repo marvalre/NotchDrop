@@ -1668,6 +1668,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     var currencyToPopup: NSPopUpButton!
     var currencyResultLabel: NSTextField!
     var currencyStatusLabel: NSTextField!
+    var currencyTaxCheckbox: NSButton!
+    var currencyTaxField: NSTextField!
+    var currencyTaxPercentSign: NSTextField!
+    static let currencyDefaultTaxPercent = "16"
     var currencyRatesCache: [String: (rate: Double, date: String)] = [:]
     var currencyPairsInFlight: Set<String> = []
     static let currencyDayFormatter: DateFormatter = {
@@ -4913,14 +4917,60 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         return result
     }
 
+    // Deliberately strict: only a plain non-negative number (comma or point as
+    // decimal separator), capped at 100 — this is a rate someone typed by
+    // hand, not an expression. Returns nil for anything else, which the
+    // caller treats as "no tax" rather than an error.
+    func parseTaxPercent(_ input: String) -> Double? {
+        let trimmed = input.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        let normalized = trimmed.replacingOccurrences(of: ",", with: ".")
+        guard normalized.filter({ $0 == "." }).count <= 1 else { return nil }
+        guard normalized.allSatisfy({ $0.isNumber || $0 == "." }) else { return nil }
+        guard let value = Double(normalized), value.isFinite else { return nil }
+        guard value >= 0, value <= 100 else { return nil }
+        return value
+    }
+
     func buildCurrencyTab() {
-        let titleLbl = lbl("Currency", 16, .bold, C.textPrimary)
+        // Wrapped in a scroll view, same pattern as Notes: a fixed-size,
+        // non-scrolling stack of rows silently clips at the smallest panel
+        // size (0.85x) the moment a row gets added — which is exactly what
+        // happened here when the tax row landed. A scroll view means this
+        // tab can never again go invisible-at-the-bottom regardless of how
+        // many rows it grows to.
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.drawsBackground = false
+        currencyContainer.addSubview(scroll)
+
+        let content = NSView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = content
+
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: currencyContainer.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: currencyContainer.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: currencyContainer.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: currencyContainer.bottomAnchor),
+            content.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            content.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            content.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+        ])
+
+        // Kept compact on purpose: at the smallest panel size the tax row
+        // pushed the result label below the visible area. The scroll view
+        // above is a safety net, but the real fix is fitting without needing
+        // it — tighter fonts/gaps, and amount+tax sharing one row.
+        let titleLbl = lbl("Currency", 13, .bold, C.textPrimary)
         titleLbl.translatesAutoresizingMaskIntoConstraints = false
-        currencyContainer.addSubview(titleLbl)
+        content.addSubview(titleLbl)
 
         currencyAmountField = NSTextField()
         currencyAmountField.stringValue = "1"
-        currencyAmountField.font = .systemFont(ofSize: 22, weight: .medium)
+        currencyAmountField.font = .systemFont(ofSize: 17, weight: .medium)
         currencyAmountField.textColor = C.textPrimary
         currencyAmountField.alignment = .center
         currencyAmountField.isBordered = false
@@ -4930,7 +4980,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         currencyAmountField.action = #selector(runCurrencyConversion)
         currencyAmountField.delegate = self
         currencyAmountField.translatesAutoresizingMaskIntoConstraints = false
-        currencyContainer.addSubview(currencyAmountField)
+        content.addSubview(currencyAmountField)
 
         currencyFromPopup = NSPopUpButton(frame: .zero, pullsDown: false)
         currencyToPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -4940,7 +4990,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             p.target = self
             p.action = #selector(runCurrencyConversion)
             p.translatesAutoresizingMaskIntoConstraints = false
-            currencyContainer.addSubview(p)
+            content.addSubview(p)
         }
         currencyFromPopup.selectItem(withTitle: "USD")
         currencyToPopup.selectItem(withTitle: "EUR")
@@ -4949,48 +4999,103 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         swapBtn.bezelStyle = .inline; swapBtn.isBordered = false
         swapBtn.contentTintColor = C.textMuted
         swapBtn.translatesAutoresizingMaskIntoConstraints = false
-        currencyContainer.addSubview(swapBtn)
+        content.addSubview(swapBtn)
 
-        currencyResultLabel = lbl("—", 24, .bold, C.textPrimary)
+        // Off by default — existing behavior (no tax) is unchanged unless the
+        // user opts in. Checking it reveals a field prefilled with 16 (a
+        // common VAT rate), which is just a starting point to edit or clear.
+        currencyTaxCheckbox = NSButton(checkboxWithTitle: "Impuesto", target: self, action: #selector(toggleCurrencyTax))
+        currencyTaxCheckbox.state = .off
+        currencyTaxCheckbox.font = .systemFont(ofSize: 11, weight: .regular)
+        currencyTaxCheckbox.contentTintColor = C.textMuted
+        currencyTaxCheckbox.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(currencyTaxCheckbox)
+
+        currencyTaxField = NSTextField()
+        currencyTaxField.stringValue = Self.currencyDefaultTaxPercent
+        currencyTaxField.font = .systemFont(ofSize: 11, weight: .medium)
+        currencyTaxField.textColor = C.textPrimary
+        currencyTaxField.alignment = .center
+        currencyTaxField.isBordered = false
+        currencyTaxField.drawsBackground = false
+        currencyTaxField.focusRingType = .none
+        currencyTaxField.target = self
+        currencyTaxField.action = #selector(runCurrencyConversion)
+        currencyTaxField.delegate = self
+        currencyTaxField.isHidden = true
+        currencyTaxField.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(currencyTaxField)
+
+        currencyTaxPercentSign = lbl("%", 11, .regular, C.textMuted)
+        currencyTaxPercentSign.isHidden = true
+        currencyTaxPercentSign.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(currencyTaxPercentSign)
+
+        // Amount and tax share one row via a stack view rather than manual
+        // centering math — a stack also auto-collapses the gap for the
+        // field/percent-sign while they're hidden (tax off), so the row
+        // shrinks back to just [amount, checkbox] with no extra code.
+        let amountTaxRow = NSStackView(views: [currencyAmountField, currencyTaxCheckbox, currencyTaxField, currencyTaxPercentSign])
+        amountTaxRow.orientation = .horizontal
+        amountTaxRow.alignment = .centerY
+        amountTaxRow.spacing = 6
+        amountTaxRow.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(amountTaxRow)
+
+        currencyResultLabel = lbl("—", 19, .bold, C.textPrimary)
         currencyResultLabel.alignment = .center
         currencyResultLabel.maximumNumberOfLines = 1
         currencyResultLabel.translatesAutoresizingMaskIntoConstraints = false
-        currencyContainer.addSubview(currencyResultLabel)
+        content.addSubview(currencyResultLabel)
 
         currencyStatusLabel = lbl("", 10, .regular, C.textMuted)
         currencyStatusLabel.alignment = .center
         currencyStatusLabel.maximumNumberOfLines = 1
         currencyStatusLabel.translatesAutoresizingMaskIntoConstraints = false
-        currencyContainer.addSubview(currencyStatusLabel)
+        content.addSubview(currencyStatusLabel)
 
         NSLayoutConstraint.activate([
-            titleLbl.topAnchor.constraint(equalTo: currencyContainer.topAnchor, constant: 8),
-            titleLbl.centerXAnchor.constraint(equalTo: currencyContainer.centerXAnchor),
+            titleLbl.topAnchor.constraint(equalTo: content.topAnchor, constant: 4),
+            titleLbl.centerXAnchor.constraint(equalTo: content.centerXAnchor),
 
-            currencyAmountField.topAnchor.constraint(equalTo: titleLbl.bottomAnchor, constant: 14),
-            currencyAmountField.centerXAnchor.constraint(equalTo: currencyContainer.centerXAnchor),
-            currencyAmountField.widthAnchor.constraint(equalToConstant: 120),
+            currencyAmountField.widthAnchor.constraint(equalToConstant: 60),
+            currencyTaxField.widthAnchor.constraint(equalToConstant: 24),
 
-            currencyFromPopup.topAnchor.constraint(equalTo: currencyAmountField.bottomAnchor, constant: 14),
+            amountTaxRow.topAnchor.constraint(equalTo: titleLbl.bottomAnchor, constant: 4),
+            amountTaxRow.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+
+            currencyFromPopup.topAnchor.constraint(equalTo: amountTaxRow.bottomAnchor, constant: 6),
             currencyFromPopup.trailingAnchor.constraint(equalTo: swapBtn.leadingAnchor, constant: -10),
             currencyFromPopup.widthAnchor.constraint(equalToConstant: 90),
 
             swapBtn.centerYAnchor.constraint(equalTo: currencyFromPopup.centerYAnchor),
-            swapBtn.centerXAnchor.constraint(equalTo: currencyContainer.centerXAnchor),
+            swapBtn.centerXAnchor.constraint(equalTo: content.centerXAnchor),
 
             currencyToPopup.centerYAnchor.constraint(equalTo: currencyFromPopup.centerYAnchor),
             currencyToPopup.leadingAnchor.constraint(equalTo: swapBtn.trailingAnchor, constant: 10),
             currencyToPopup.widthAnchor.constraint(equalToConstant: 90),
 
-            currencyResultLabel.topAnchor.constraint(equalTo: currencyFromPopup.bottomAnchor, constant: 20),
-            currencyResultLabel.leadingAnchor.constraint(equalTo: currencyContainer.leadingAnchor, constant: 16),
-            currencyResultLabel.trailingAnchor.constraint(equalTo: currencyContainer.trailingAnchor, constant: -16),
+            currencyResultLabel.topAnchor.constraint(equalTo: currencyFromPopup.bottomAnchor, constant: 8),
+            currencyResultLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            currencyResultLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
 
-            currencyStatusLabel.topAnchor.constraint(equalTo: currencyResultLabel.bottomAnchor, constant: 6),
-            currencyStatusLabel.centerXAnchor.constraint(equalTo: currencyContainer.centerXAnchor),
+            currencyStatusLabel.topAnchor.constraint(equalTo: currencyResultLabel.bottomAnchor, constant: 3),
+            currencyStatusLabel.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            // This is what gives the document view its scrollable height —
+            // nothing else pins content's bottom, so it grows to fit whatever
+            // rows exist rather than clipping them. In normal use this fits
+            // well within the visible area and the scroll never engages.
+            content.bottomAnchor.constraint(equalTo: currencyStatusLabel.bottomAnchor, constant: 4),
         ])
 
         runCurrencyConversion()
+    }
+
+    @objc func toggleCurrencyTax(_ sender: NSButton) {
+        let hidden = (sender.state == .off)
+        currencyTaxField.isHidden = hidden
+        currencyTaxPercentSign.isHidden = hidden
+        updateCurrencyDisplay()
     }
 
     @objc func swapCurrencies() {
@@ -5005,7 +5110,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // local-only recompute: hitting the network per keystroke would fire four
     // requests for "1000".
     func controlTextDidChange(_ obj: Notification) {
-        guard let field = obj.object as? NSTextField, field === currencyAmountField else { return }
+        guard let field = obj.object as? NSTextField,
+              field === currencyAmountField || field === currencyTaxField else { return }
         updateCurrencyDisplay()
     }
 
@@ -5014,7 +5120,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func updateCurrencyDisplay() {
         guard let from = currencyFromPopup.titleOfSelectedItem, let to = currencyToPopup.titleOfSelectedItem else { return }
         let typed = currencyAmountField.stringValue
-        guard let amount = evaluateArithmetic(typed) else {
+        guard let baseAmount = evaluateArithmetic(typed) else {
             // Half-typed expressions land here constantly ("25*"), so this is a
             // neutral hint, not an error state.
             currencyResultLabel.stringValue = "—"
@@ -5023,24 +5129,40 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 : "No se puede calcular «\(typed)»"
             return
         }
+
+        var parts: [String] = []
+
         // When the field held an actual operation, echo what it resolved to so
         // it's clear which number got converted. A plain "25" needs no echo.
         let trimmed = typed.trimmingCharacters(in: .whitespaces)
         let hasOperator = trimmed.dropFirst().rangeOfCharacter(from: CharacterSet(charactersIn: "+-*/×÷()")) != nil
-        let mathNote = hasOperator ? "\(trimmed) = \(formatCurrencyAmount(amount, code: from)) · " : ""
+        if hasOperator {
+            parts.append("\(trimmed) = \(formatCurrencyAmount(baseAmount, code: from))")
+        }
+
+        // Tax is opt-in via the checkbox; an invalid or empty percent while
+        // checked is silently treated as no tax rather than blocking the result.
+        var amount = baseAmount
+        if currencyTaxCheckbox.state == .on, let taxPercent = parseTaxPercent(currencyTaxField.stringValue) {
+            amount = baseAmount * (1 + taxPercent / 100)
+            let taxLabel = taxPercent.truncatingRemainder(dividingBy: 1) == 0 ? String(format: "%.0f", taxPercent) : String(format: "%.2f", taxPercent)
+            parts.append("+\(taxLabel)% = \(formatCurrencyAmount(amount, code: from))")
+        }
 
         if from == to {
             currencyResultLabel.stringValue = formatCurrencyAmount(amount, code: to)
-            currencyStatusLabel.stringValue = "\(mathNote)Misma moneda"
+            parts.append("Misma moneda")
+            currencyStatusLabel.stringValue = parts.joined(separator: " · ")
             return
         }
         if let cached = currencyRatesCache["\(from)_\(to)"] {
             currencyResultLabel.stringValue = formatCurrencyAmount(amount * cached.rate, code: to)
-            currencyStatusLabel.stringValue = "\(mathNote)1 \(from) = \(String(format: "%.4f", cached.rate)) \(to) · \(cached.date)"
+            parts.append("1 \(from) = \(String(format: "%.4f", cached.rate)) \(to) · \(cached.date)")
         } else {
             currencyResultLabel.stringValue = "—"
-            currencyStatusLabel.stringValue = "\(mathNote)Cargando tasas…"
+            parts.append("Cargando tasas…")
         }
+        currencyStatusLabel.stringValue = parts.joined(separator: " · ")
     }
 
     // Updates the display, then refreshes the rate over the network if needed.

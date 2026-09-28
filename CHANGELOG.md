@@ -15,6 +15,18 @@ git reset --hard v3.9.1
 
 ---
 
+## v3.13.0 — Actualizaciones automáticas firmadas
+
+**Agregado**
+- Nueva sección **🔄 Actualizaciones** en Ajustes: NotchDrop puede revisar sola (una vez al día, o al pulsar "Buscar ahora") si hay una versión nueva publicada en GitHub Releases, y ofrecer instalarla en el mismo lugar.
+- Antes de instalar cualquier cosa, verifica una firma Ed25519 sobre el `.zip` de la versión. La clave privada que produce esa firma solo vive en la Mac de quien publica releases (ver `scripts/keygen.swift` y `scripts/sign_release.swift`) y nunca se sube a git ni a GitHub — así, aunque alguien más entrara a la cuenta de GitHub del proyecto, no podría hacer que esta función instalara una versión suya en las Macs que ya tienen NotchDrop: la firma no coincidiría y la instalación se cancela.
+- El toggle "Buscar actualizaciones automáticamente" (activado por defecto) vive en Ajustes; apagarlo deja el chequeo manual disponible con el botón "Buscar ahora".
+
+**Verificación**
+- Revisado a mano contra el código real: el flujo falla cerrado (no instala nada) si la clave pública todavía es el placeholder, si la firma no verifica, o si el release no trae `.zip` + `.zip.sig`.
+
+---
+
 ## v3.12.1 — La barra de pestañas ya no se sale del panel
 
 **Arreglado**

@@ -12,3 +12,8 @@ backups/
 
 # Local source snapshots (safety net for reverting)
 snapshots/
+
+# The auto-updater's Ed25519 private key (see scripts/keygen.swift). It must
+# only ever live on the machine that signs releases — never in git, never on
+# GitHub.
+update_signing_key.private

@@ -70,6 +70,14 @@ Convertir imágenes y PDF **no necesita nada de esto** — funciona directo.
 - Pásale el mouse por encima para abrirlo, o usa el atajo **⌥⌘N** (Option + Comando + N) desde cualquier app.
 - Arrastra archivos ahí para guardarlos temporalmente (Shelf), pega links para descargar, convierte formatos, pon alarmas, revisa tu historial de portapapeles, o convierte monedas — todo desde las pestañas de arriba.
 
+## 7. Actualizaciones
+
+Desde Ajustes → **🔄 Actualizaciones**, NotchDrop puede revisar sola si hay una versión nueva en GitHub (una vez al día, o cuando pulses "Buscar ahora") y, si la encuentra, descargarla e instalarla en el mismo lugar sin que tengas que repetir los pasos de arriba.
+
+Antes de instalar nada, verifica que el archivo venga firmado con una clave que solo existe en la Mac de quien publica los releases — así, aunque alguien más entrara a la cuenta de GitHub del proyecto, no podría hacer que esta función instalara una versión suya: la firma no coincidiría y NotchDrop se niega a instalar. Los detalles de cómo se genera y usa esa clave están en `scripts/keygen.swift` y `scripts/sign_release.swift`.
+
+Si prefieres no usarla, apaga "Buscar actualizaciones automáticamente" en Ajustes; el paso 3 de arriba sigue funcionando igual para instalar a mano.
+
 ## ¿Problemas?
 
 - **"NotchDrop no se puede abrir porque no se puede verificar"** → repite el paso 3 (clic derecho → Abrir).

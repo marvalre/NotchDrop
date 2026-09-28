@@ -5445,6 +5445,89 @@ enum UpdateFeed {
     }
 }
 
+enum UpdateInstaller {
+    static func fetch(_ url: URL, timeout: TimeInterval = 120) throws -> Data {
+        guard UpdateFeed.isAllowed(url) else { throw UpdateError.network("URL no permitida") }
+        var req = URLRequest(url: url); req.timeoutInterval = timeout
+        let sem = DispatchSemaphore(value: 0)
+        var result: Result<Data, UpdateError> = .failure(.network("sin respuesta"))
+        URLSession.shared.dataTask(with: req) { d, r, e in
+            if let e { result = .failure(.network(e.localizedDescription)) }
+            else if let h = r as? HTTPURLResponse, !(200..<300).contains(h.statusCode) { result = .failure(.http(h.statusCode)) }
+            else { result = .success(d ?? Data()) }
+            sem.signal()
+        }.resume()
+        sem.wait()
+        return try result.get()
+    }
+
+    // Runs off the main thread; `completion` is called on main with the installed app.
+    static func install(_ release: UpdateRelease, currentApp: URL, expectedBundleID: String,
+                        completion: @escaping (Result<URL, UpdateError>) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try installSync(release, currentApp: currentApp, expectedBundleID: expectedBundleID) }
+                .mapError { $0 as? UpdateError ?? .replaceFailed($0.localizedDescription) }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    // Order matters: nothing touches the installed app until the download is
+    // verified AND unpacked AND validated, and the swap itself is atomic. If any
+    // step fails, the app the user is running is exactly as it was.
+    static func installSync(_ release: UpdateRelease, currentApp: URL, expectedBundleID: String) throws -> URL {
+        let fm = FileManager.default
+        let parent = currentApp.deletingLastPathComponent()
+        guard fm.isWritableFile(atPath: parent.path) else { throw UpdateError.notWritable }
+
+        let zipData = try fetch(release.zipURL)
+        let sig = String(decoding: try fetch(release.signatureURL, timeout: 30), as: UTF8.self)
+        guard UpdateSignature.verify(data: zipData, signatureBase64: sig) else { throw UpdateError.badSignature }
+
+        let work = fm.temporaryDirectory.appendingPathComponent("NotchDropUpdate-\(UUID().uuidString)")
+        try fm.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: work) }
+        let zipFile = work.appendingPathComponent("update.zip")
+        try zipData.write(to: zipFile)
+
+        let unzip = Process()
+        unzip.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        unzip.arguments = ["-x", "-k", zipFile.path, work.appendingPathComponent("x").path]
+        guard runProcessBounded(unzip, timeout: 60).status == 0 else { throw UpdateError.extractFailed }
+        let newApp = work.appendingPathComponent("x/NotchDrop.app")
+
+        // Even a correctly signed zip must be what the release says it is.
+        let info = NSDictionary(contentsOf: newApp.appendingPathComponent("Contents/Info.plist"))
+        guard info?["CFBundleIdentifier"] as? String == expectedBundleID else { throw UpdateError.invalidBundle("identificador distinto") }
+        guard info?["CFBundleShortVersionString"] as? String == release.version else { throw UpdateError.invalidBundle("versión distinta a la publicada") }
+        let cs = Process()
+        cs.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        cs.arguments = ["--verify", "--deep", "--strict", newApp.path]
+        guard runProcessBounded(cs, timeout: 60).status == 0 else { throw UpdateError.invalidBundle("firma de código inválida") }
+
+        let backupName = "NotchDrop (anterior).app"
+        let backup = parent.appendingPathComponent(backupName)
+        if fm.fileExists(atPath: backup.path) { try? fm.trashItem(at: backup, resultingItemURL: nil) }
+        let installed: URL
+        do {
+            installed = try fm.replaceItemAt(currentApp, withItemAt: newApp, backupItemName: backupName,
+                                             options: [.withoutDeletingBackupItem]) ?? currentApp
+        } catch { throw UpdateError.replaceFailed(error.localizedDescription) }
+        // The previous version goes to the Trash, not oblivion, so it can be recovered.
+        if fm.fileExists(atPath: backup.path) { try? fm.trashItem(at: backup, resultingItemURL: nil) }
+        return installed
+    }
+
+    // Waits for this process to exit, then opens the new copy. The app path is
+    // passed as $0, never spliced into the script text.
+    static func relaunch(_ app: URL) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "while kill -0 \(ProcessInfo.processInfo.processIdentifier) 2>/dev/null; do sleep 0.2; done; /usr/bin/open \"$0\"", app.path]
+        try? p.run()
+        NSApp.terminate(nil)
+    }
+}
+
 // Compiled out for the test runner (tests/run.sh), which links this file as a
 // library next to tests/main.swift. An @main entry point rather than top-level
 // statements because Swift rejects top-level code in a non-main file even inside

@@ -1034,6 +1034,26 @@ enum FileConverter {
         return Double(r.out.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+    /// Which container the compressed file goes in. It used to keep the source
+    /// extension while ALWAYS encoding AAC/H.264, which ffmpeg rejects for mp3,
+    /// flac, aiff, opus and webm (leaving a stray empty file) and, for wav,
+    /// silently wraps as AAC inside a .wav that nothing on macOS can play.
+    /// Formats that can't be made smaller by lowering a bitrate (lossless) or
+    /// that H.264/AAC can't live in come out as .m4a / .mp4 instead.
+    static func compressionOutputExtension(forSource ext: String, isVideo: Bool) -> String {
+        let e = ext.lowercased()
+        if isVideo { return ["mp4", "mov", "m4v", "mkv"].contains(e) ? e : "mp4" }
+        return ["mp3", "m4a", "aac", "opus"].contains(e) ? e : "m4a"
+    }
+
+    static func audioCompressionCodecArgs(outputExtension ext: String, kbps: Int) -> [String] {
+        switch ext {
+        case "mp3":  return ["-c:a", "libmp3lame", "-b:a", "\(kbps)k"]
+        case "opus": return ["-c:a", "libopus", "-b:a", "\(kbps)k"]
+        default:     return ["-c:a", "aac", "-b:a", "\(kbps)k"]
+        }
+    }
+
     private static func compressMedia(_ url: URL, targetPercent: Int, originalBytes: Int64) -> Outcome {
         guard let ffmpeg = ffmpegPath() else { return .missingFFmpeg }
         guard originalBytes > 0, let duration = probeDuration(url), duration > 0.1 else {
@@ -1044,7 +1064,8 @@ enum FileConverter {
         // Leave headroom for container overhead so the result lands under target.
         let targetBitsPerSecond = (targetBytes * 8.0 / duration) * 0.95
 
-        let out = output(for: url, ext: url.pathExtension.lowercased(), suffix: "-comprimido")
+        let outExt = compressionOutputExtension(forSource: url.pathExtension, isVideo: isVideo)
+        let out = output(for: url, ext: outExt, suffix: "-comprimido")
         var args = ["-y", "-i", url.path]
 
         if isVideo {
@@ -1077,7 +1098,7 @@ enum FileConverter {
             }
         } else {
             let audioBps = max(48_000.0, targetBitsPerSecond)
-            args += ["-c:a", "aac", "-b:a", "\(Int(audioBps / 1000))k"]
+            args += audioCompressionCodecArgs(outputExtension: outExt, kbps: Int(audioBps / 1000))
         }
         args.append(out.path)
 
@@ -1090,6 +1111,10 @@ enum FileConverter {
 
         let result = runProcessBounded(process, timeout: 1200)
         guard result.status == 0, FileManager.default.fileExists(atPath: out.path) else {
+            // ffmpeg creates the output before it knows it can finish; a failure
+            // or timeout leaves an empty/partial file that would otherwise sit
+            // next to the source and push the next attempt to "-comprimido-2".
+            try? FileManager.default.removeItem(at: out)
             let line = result.err.split(separator: "\n").last.map(String.init) ?? "ffmpeg falló."
             return .failure(String(line.prefix(120)))
         }
@@ -1250,6 +1275,7 @@ enum FileConverter {
         // able to hang the converter forever.
         let result = runProcessBounded(process, timeout: 1200)
         guard result.status == 0, FileManager.default.fileExists(atPath: out.path) else {
+            try? FileManager.default.removeItem(at: out)
             let line = result.err.split(separator: "\n").last.map(String.init) ?? "ffmpeg falló."
             return .failure(String(line.prefix(120)))
         }

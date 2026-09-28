@@ -88,5 +88,86 @@ check(UpdateFeed.isAllowed(URL(string: "http://127.0.0.1:8765/x")!), "http local
 check(!UpdateFeed.isAllowed(URL(string: "http://evil.example/x")!), "http remoto rechazado")
 check(!UpdateFeed.isAllowed(URL(string: "file:///etc/passwd")!), "file:// rechazado")
 
+// ── Compresión con ffmpeg real ────────────────────────────────────────────
+print("Compresión: contenedor y códec")
+check(FileConverter.compressionOutputExtension(forSource: "mp3", isVideo: false) == "mp3", "mp3 → mp3")
+check(FileConverter.compressionOutputExtension(forSource: "m4a", isVideo: false) == "m4a", "m4a → m4a")
+check(FileConverter.compressionOutputExtension(forSource: "opus", isVideo: false) == "opus", "opus → opus")
+for lossless in ["wav", "flac", "aiff", "aif", "ogg", "wma"] {
+    check(FileConverter.compressionOutputExtension(forSource: lossless, isVideo: false) == "m4a", "\(lossless) → m4a")
+}
+for keep in ["mp4", "mov", "m4v", "mkv"] { check(FileConverter.compressionOutputExtension(forSource: keep, isVideo: true) == keep, "video \(keep) se conserva") }
+for change in ["webm", "avi", "flv", "wmv", "mpg", "mpeg"] { check(FileConverter.compressionOutputExtension(forSource: change, isVideo: true) == "mp4", "video \(change) → mp4") }
+
+if let ffmpeg = FileConverter.ffmpegPath() {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("nd-compress-\(UUID().uuidString)")
+    try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    func sh(_ exe: URL, _ args: [String]) -> String {
+        let p = Process(); p.executableURL = exe; p.arguments = args
+        let o = Pipe(); p.standardOutput = o; p.standardError = FileHandle.nullDevice
+        try! p.run(); let d = o.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+        return String(decoding: d, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let ffprobe = URL(fileURLWithPath: ffmpeg.path.replacingOccurrences(of: "ffmpeg", with: "ffprobe"))
+    func codec(_ url: URL, _ stream: String) -> String {
+        sh(ffprobe, ["-v", "error", "-select_streams", stream, "-show_entries", "stream=codec_name", "-of", "csv=p=0", url.path])
+    }
+    func make(_ name: String, _ inputs: [String], _ codecArgs: [String]) -> URL {
+        let out = dir.appendingPathComponent(name)
+        _ = sh(ffmpeg, ["-y", "-v", "error"] + inputs + codecArgs + [out.path])
+        return out
+    }
+    func compressSync(_ url: URL, _ percent: Int) -> FileConverter.Outcome {
+        var result: FileConverter.Outcome?
+        FileConverter.compress(url, targetPercent: percent) { result = $0 }
+        let deadline = Date().addingTimeInterval(180)
+        while result == nil && Date() < deadline { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05)) }
+        return result ?? .failure("timeout")
+    }
+    let noise = ["-f", "lavfi", "-i", "anoisesrc=d=8:c=pink:r=44100"]
+    // (archivo, códec de audio esperado en la salida, extensión esperada)
+    let audioCases: [(String, [String], String, String)] = [
+        ("a.mp3", ["-c:a", "libmp3lame", "-b:a", "192k"], "mp3", "mp3"),
+        ("a.m4a", ["-c:a", "aac", "-b:a", "192k"], "aac", "m4a"),
+        ("a.wav", ["-c:a", "pcm_s16le"], "aac", "m4a"),
+        ("a.flac", ["-c:a", "flac"], "aac", "m4a"),
+        ("a.aiff", ["-c:a", "pcm_s16be"], "aac", "m4a"),
+        ("a.opus", ["-c:a", "libopus", "-b:a", "128k"], "opus", "opus"),
+    ]
+    for (name, enc, wantCodec, wantExt) in audioCases {
+        let src = make(name, noise, enc)
+        guard FileManager.default.fileExists(atPath: src.path) else { print("  (omitido \(name): este ffmpeg no puede generarlo)"); continue }
+        switch compressSync(src, 50) {
+        case .success(let out):
+            check(out.pathExtension == wantExt, "\(name): salida .\(wantExt) (fue .\(out.pathExtension))")
+            check(codec(out, "a:0") == wantCodec, "\(name): códec \(wantCodec) (fue \(codec(out, "a:0")))")
+            check(FileConverter.fileSize(of: out) < FileConverter.fileSize(of: src), "\(name): pesa menos que el original")
+        case .failure(let m): check(false, "\(name): debía comprimir pero falló: \(m)")
+        case .missingFFmpeg: check(false, "\(name): ffmpeg no encontrado")
+        }
+    }
+    let videoSrc = ["-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25:duration=5", "-f", "lavfi", "-i", "anoisesrc=d=5:c=pink:r=44100"]
+    let videoCases: [(String, [String], String)] = [
+        ("v.mp4", ["-c:v", "libx264", "-b:v", "1500k", "-c:a", "aac"], "mp4"),
+        ("v.mkv", ["-c:v", "libx264", "-b:v", "1500k", "-c:a", "aac"], "mkv"),
+        ("v.webm", ["-c:v", "libvpx-vp9", "-b:v", "1500k", "-c:a", "libopus"], "mp4"),
+    ]
+    for (name, enc, wantExt) in videoCases {
+        let src = make(name, videoSrc, enc)
+        guard FileManager.default.fileExists(atPath: src.path) else { print("  (omitido \(name))"); continue }
+        switch compressSync(src, 50) {
+        case .success(let out):
+            check(out.pathExtension == wantExt, "\(name): salida .\(wantExt) (fue .\(out.pathExtension))")
+            check(codec(out, "v:0") == "h264", "\(name): video h264 (fue \(codec(out, "v:0")))")
+        case .failure(let m): check(false, "\(name): debía comprimir pero falló: \(m)")
+        case .missingFFmpeg: check(false, "\(name): ffmpeg no encontrado")
+        }
+    }
+    let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+    let leftovers = names.filter { FileConverter.fileSize(of: dir.appendingPathComponent($0)) == 0 }
+    check(leftovers.isEmpty, "no quedan archivos vacíos tras comprimir (\(leftovers))")
+} else { print("  (ffmpeg no instalado: se omiten las pruebas de compresión real)") }
+
 print("\nRESULTADO: \(passed) pass / \(failed) fail")
 exit(failed == 0 ? 0 : 1)

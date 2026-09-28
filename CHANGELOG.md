@@ -15,6 +15,22 @@ git reset --hard v3.9.1
 
 ---
 
+## v3.13.4 — Correcciones del escaneo: imágenes, notas, alarmas y un crash
+
+**Arreglado**
+- **Descarga directa de imágenes.** Ya no guarda como "imagen" una página de error (404) ni un HTML de login: exige respuesta 2xx y tipo de imagen, y la extensión sale de la URL o del tipo MIME, nunca del nombre que decida el servidor (un `.png` que en realidad era un ejecutable ya se rechaza).
+- **Notes interpretaba tu texto como HTML.** `<b>`, `a < b` o `R&D` se comían o se transformaban, y los saltos de línea se perdían. Ahora se escapa y se conservan las líneas (comprobado guardando una nota real en Apple Notes). El botón ahora confirma "✓ Guardada" o avisa si falló el permiso.
+- **Alarmas que suenan horas tarde.** Si la Mac dormía durante la alarma, al despertar sonaba el tono en loop con horas de retraso. Ahora, pasados 2 minutos, se marca como **"Alarma perdida — era a las…"** y no suena. Igual al reabrir la app. Textos de la notificación en español.
+- **Crash con duración infinita.** Una transmisión en vivo (o metadatos corruptos) que reporta duración infinita hacía que la app se cerrara al dibujar el tiempo. Ahora se muestra 0:00.
+- **Hover y arrastre.** Arrastrar un archivo por otro monitor situado encima del notch abría el Shelf; ahora solo cuenta la pantalla del notch. La fila superior de píxeles (donde se pega el cursor) también se cuenta como zona válida.
+- **Chrome/Netflix.** Con Chrome abierto y en silencio, la app ya no revisa todas sus pestañas con AppleScript cada 3 segundos; solo lo hace cuando hay audio.
+- **Tutorial** mencionaba 4 de las 7 pestañas.
+
+**Verificación**
+- 241 comprobaciones automáticas (antes 210). Cada arreglo tiene su prueba.
+
+---
+
 ## v3.13.3 — Los MP4 descargados se abren en cualquier lado
 
 **Arreglado**

@@ -895,6 +895,44 @@ final class MediaDownloader {
         }
     }
 
+    /// Decides whether a direct-link response is really an image and what to call it.
+    /// The server used to decide both: a 404 page or a redirect to an HTML login was
+    /// saved as if it were the picture, and `suggestedFilename` let the server pick any
+    /// extension. Now the status must be 2xx, the type must be an image, and the
+    /// extension always comes from the URL or the MIME type, never from the server's name.
+    enum DirectDownloadVerdict: Equatable {
+        case accept(filename: String)
+        case reject(String)
+    }
+
+    static func directDownloadVerdict(url: URL, status: Int?, mimeType: String?) -> DirectDownloadVerdict {
+        if let status, !(200..<300).contains(status) {
+            return .reject("El servidor respondió \(status); no se descargó nada.")
+        }
+        let mime = (mimeType ?? "").split(separator: ";").first.map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
+        let urlExt = url.pathExtension.lowercased()
+        let mimeExt: [String: String] = [
+            "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/gif": "gif",
+            "image/webp": "webp", "image/heic": "heic", "image/bmp": "bmp",
+            "image/tiff": "tiff", "image/avif": "avif"
+        ]
+        let isImageMime = mime.hasPrefix("image/")
+        // Some CDNs serve images as octet-stream; the URL's own extension vouches for those.
+        let vouchedByURL = (mime.isEmpty || mime == "application/octet-stream") && imageExtensions.contains(urlExt)
+        guard isImageMime || vouchedByURL else {
+            return .reject("El enlace no devolvió una imagen.")
+        }
+        let ext: String
+        if imageExtensions.contains(urlExt) { ext = urlExt }
+        else if let mapped = mimeExt[mime] { ext = mapped }
+        else { return .reject("Ese tipo de imagen no es compatible.") }
+        var stem = (url.deletingPathExtension().lastPathComponent as NSString).lastPathComponent
+        stem = stem.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        while stem.hasPrefix(".") { stem.removeFirst() }
+        if stem.isEmpty || stem == "/" { stem = "imagen" }
+        return .accept(filename: "\(stem).\(ext)")
+    }
+
     private static func downloadDirectFile(_ url: URL, completion: @escaping (Outcome) -> Void) {
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
@@ -905,13 +943,18 @@ final class MediaDownloader {
                 completion(.failure(error.localizedDescription)); return
             }
             guard let temp else { completion(.failure("Descarga vacía.")); return }
-            let name = response?.suggestedFilename ?? url.lastPathComponent
-            let target = uniqueDestination(for: name)
-            do {
-                try FileManager.default.moveItem(at: temp, to: target)
-                completion(.success(target))
-            } catch {
-                completion(.failure(error.localizedDescription))
+            let http = response as? HTTPURLResponse
+            switch directDownloadVerdict(url: response?.url ?? url, status: http?.statusCode, mimeType: response?.mimeType) {
+            case .reject(let why):
+                completion(.failure(why))
+            case .accept(let name):
+                let target = uniqueDestination(for: name)
+                do {
+                    try FileManager.default.moveItem(at: temp, to: target)
+                    completion(.success(target))
+                } catch {
+                    completion(.failure(error.localizedDescription))
+                }
             }
         }.resume()
     }
@@ -2294,18 +2337,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 // every display, so without this check a second monitor positioned
                 // above (or overlapping the notch's x-range) lets the open-ended
                 // vertical check below fire from anywhere on that other screen.
-                guard let screen = self.targetScreen, screen.frame.contains(loc) else { return }
+                guard let screen = self.targetScreen else { return }
                 let rect = self.getPanelRect(expanded: false)
-                let physicalNotchMinX = rect.midX - (self.notchWidth / 2)
-                let physicalNotchMaxX = rect.midX + (self.notchWidth / 2)
                 // Trigger ONLY if the mouse is horizontally within the physical notch
                 // AND vertically within its collapsed height (+2px buffer on both
-                // edges). The old check only bounded the lower edge, so on a
-                // multi-monitor setup the trigger zone effectively extended upward
-                // forever — any mouse movement on a display above the notch, inside
-                // that narrow x-strip, would spuriously pop the panel open.
-                if loc.x >= physicalNotchMinX && loc.x <= physicalNotchMaxX &&
-                    loc.y >= (rect.minY - 2) && loc.y <= (rect.maxY + 2) {
+                // edges) — see NotchGeometry.hoverTriggers for why both bounds matter.
+                if NotchGeometry.hoverTriggers(pointer: loc, screenFrame: screen.frame,
+                                               collapsedRect: rect, notchWidth: self.notchWidth) {
                     self.expandPanel()
                 }
             } else {
@@ -2368,10 +2406,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         globalDragMon = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDragged]) { [weak self] _ in
             guard let self = self, !self.isExpanded else { return }
             let loc = NSEvent.mouseLocation
+            guard let screen = self.targetScreen else { return }
             let rect = self.getPanelRect(expanded: false)
-            let notchMinX = rect.midX - (self.notchWidth / 2) - 60
-            let notchMaxX = rect.midX + (self.notchWidth / 2) + 60
-            if loc.x >= notchMinX && loc.x <= notchMaxX && loc.y >= (rect.minY - 30) {
+            if NotchGeometry.dragTriggers(pointer: loc, screenFrame: screen.frame,
+                                          collapsedRect: rect, notchWidth: self.notchWidth) {
                 guard self.dragCarriesFiles() else { return }
                 DispatchQueue.main.async { self.prepareShelfForDrop() }
             }
@@ -4096,7 +4134,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func startOnboarding() {
         onboardingSteps = [
             (target: { [weak self] in self?.nooksTabBtn }, title: "Tus pestañas",
-             text: "Cambia entre Reproductor, Shelf, Tools y Notes desde aquí arriba."),
+             text: "Cambia entre Player, Shelf, Tools, Notes, Convert, Currency y Ajustes desde aquí arriba."),
             (target: { [weak self] in self?.trayTabBtn }, title: "Shelf de archivos",
              text: "Arrastra archivos al notch en cualquier momento para guardarlos aquí temporalmente."),
             (target: { [weak self] in self?.settingsBtn }, title: "Ajustes",
@@ -4578,6 +4616,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             }
             return
         }
+        // The result only ever counts while system audio is playing, so with Chrome
+        // open and nothing audible there is no reason to walk every tab through
+        // AppleScript every 3 s (which also keeps waking Chrome's Automation permission).
+        guard FallbackPollPolicy.shouldPollNetflix(chromeRunning: true, audible: systemAudioIsAudible,
+                                                   usingFallback: usingNetflixFallback) else { return }
         guard !isNetflixPolling else { return }
         isNetflixPolling = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -4659,12 +4702,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         track = next
         updateUI()
     }
-    func formatTime(_ time: Double) -> String {
-        guard !time.isNaN && time >= 0 else { return "0:00" }
-        let mins = Int(time) / 60
-        let secs = Int(time) % 60
-        return String(format: "%d:%02d", mins, secs)
-    }
+    func formatTime(_ time: Double) -> String { PlaybackTime.clock(time) }
 
     func updateUI() {
         if track.isActive && !track.title.isEmpty {
@@ -4921,7 +4959,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             guard let self else { return }
             DispatchQueue.main.async {
                 if !granted {
-                    self.alarmStatusLabel?.stringValue = "Enable notifications to use native alarms"
+                    self.alarmStatusLabel?.stringValue = "Activa las notificaciones para usar alarmas"
                     self.alarmStatusLabel?.textColor = NSColor.systemRed
                 }
             }
@@ -4929,11 +4967,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
         let defaults = UserDefaults.standard
         let timestamp = defaults.double(forKey: alarmDateDefaultsKey)
-        guard timestamp > Date().timeIntervalSince1970 else {
-            defaults.removeObject(forKey: alarmDateDefaultsKey)
-            defaults.removeObject(forKey: alarmMinutesDefaultsKey)
-            return
-        }
+        guard timestamp > 0 else { return }
+        // A saved alarm that came due while the app was closed is settled by the same
+        // policy as a live one: shortly overdue rings, long overdue is reported missed.
         alarmEnd = Date(timeIntervalSince1970: timestamp)
         alarmMins = defaults.integer(forKey: alarmMinutesDefaultsKey)
         alarmTimer?.invalidate()
@@ -4945,8 +4981,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func scheduleNativeAlarm(minutes: Int, fireDate: Date) {
         let center = UNUserNotificationCenter.current()
         let content = UNMutableNotificationContent()
-        content.title = "⏰ NotchDrop Alarm"
-        content.body = minutes == 1 ? "Your alarm is ringing." : "Your \(minutes)-minute alarm is ringing."
+        content.title = "⏰ Alarma de NotchDrop"
+        content.body = minutes == 1 ? "Tu alarma está sonando." : "Tu alarma de \(minutes) minutos está sonando."
         content.sound = .default
         content.categoryIdentifier = "ALARM_CATEGORY"
         // Lets the banner push through most Focus modes. A true bypass-everything
@@ -4963,7 +4999,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         center.add(request) { [weak self] error in
             guard let error, let self else { return }
             DispatchQueue.main.async {
-                self.alarmStatusLabel.stringValue = "Could not schedule alarm: \(error.localizedDescription)"
+                self.alarmStatusLabel.stringValue = "No se pudo programar la alarma: \(error.localizedDescription)"
                 self.alarmStatusLabel.textColor = NSColor.systemRed
             }
         }
@@ -5037,12 +5073,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     func tickAlarm() {
         guard let e = alarmEnd else { return }
-        let r = e.timeIntervalSinceNow
-        if r <= 0 {
+        let r: TimeInterval
+        switch AlarmPolicy.decide(end: e) {
+        case .pending(let remaining):
+            r = remaining
+        case .ring:
             alarmTimer?.invalidate(); alarmTimer = nil; alarmEnd = nil
             UserDefaults.standard.removeObject(forKey: alarmDateDefaultsKey)
             UserDefaults.standard.removeObject(forKey: alarmMinutesDefaultsKey)
             startAlarmRinging()
+            return
+        case .missed:
+            alarmTimer?.invalidate(); alarmTimer = nil; alarmEnd = nil
+            UserDefaults.standard.removeObject(forKey: alarmDateDefaultsKey)
+            UserDefaults.standard.removeObject(forKey: alarmMinutesDefaultsKey)
+            let f = DateFormatter(); f.dateFormat = "h:mm a"
+            alarmStatusLabel?.stringValue = "⏰ Alarma perdida — era a las \(f.string(from: e))"
+            alarmStatusLabel?.textColor = C.textMuted
+            alarmCancelBtn?.isHidden = true
+            updateUI()
             return
         }
         let formatter = DateFormatter(); formatter.dateFormat = "h:mm a"
@@ -5335,6 +5384,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     // ── Notes Tab ──
     var notesTextView: NSTextView!
+    var notesSaveBtn: NSButton!
     func buildNotesTab() {
         let titleLbl = lbl("Apple Notes Quick Entry", 16, .bold, C.textPrimary)
         titleLbl.translatesAutoresizingMaskIntoConstraints = false
@@ -5359,6 +5409,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         saveBtn.controlSize = .large
         saveBtn.translatesAutoresizingMaskIntoConstraints = false
         notesContainer.addSubview(saveBtn)
+        notesSaveBtn = saveBtn
         
         NSLayoutConstraint.activate([
             titleLbl.topAnchor.constraint(equalTo: notesContainer.topAnchor, constant: 8),
@@ -5831,6 +5882,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // only escaped the sequence \" — so a plain quote broke the script, and an
         // AppleScript string literal can't contain raw newlines at all, meaning any
         // multi-line note silently failed to save (runScriptOut discards errors).
+        //
+        // Notes treats `body` as HTML, so the text is escaped and its line breaks
+        // turned into markup first — otherwise "<b>", "a < b" or "R&D" were rendered
+        // (or eaten) instead of saved, and every line break collapsed into a space.
         let script = """
         on run argv
             tell application "Notes"
@@ -5838,23 +5893,115 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             end tell
         end run
         """
+        let html = NotesFormatter.html(from: text)
+        let originalTitle = "Save to Apple Notes"
+        notesSaveBtn?.isEnabled = false
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let ok = self?.runScript(script, arguments: [text]) ?? false
+            let ok = self?.runScript(script, arguments: [html]) ?? false
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.notesSaveBtn?.isEnabled = true
                 if ok {
                     self.notesTextView.string = ""
+                    self.notesSaveBtn?.title = "✓ Guardada en Notes"
                 } else {
                     NSLog("NotchDrop: saving note to Apple Notes failed")
+                    self.notesSaveBtn?.title = "No se pudo guardar — revisa el permiso de Automatización"
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                    self?.notesSaveBtn?.title = originalTitle
                 }
             }
         }
     }
 }
 
+/// Apple Notes takes the note body as HTML; plain text has to be converted.
+enum NotesFormatter {
+    static func html(from text: String) -> String {
+        func escape(_ line: Substring) -> String {
+            String(line)
+                .replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+        }
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        return normalized.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.isEmpty ? "<div><br></div>" : "<div>\(escape($0))</div>" }
+            .joined()
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MARK: - Entry
 // ═══════════════════════════════════════════════════════════════════════════
+enum PlaybackTime {
+    /// `Int(_:)` traps on infinity and on anything past Int.max. Media sources do report
+    /// both (live streams, corrupt metadata), so the value is checked and capped at 99h.
+    static func clock(_ time: Double) -> String {
+        guard time.isFinite, time >= 0 else { return "0:00" }
+        let whole = Int(min(time, 359_999))
+        return String(format: "%d:%02d", whole / 60, whole % 60)
+    }
+}
+
+enum NotchGeometry {
+    /// `NSRect.contains` leaves out the top and right edges, and the top pixel row is
+    /// exactly where a pointer pushed against the notch sits — so containment on the
+    /// screen is tested with a 1pt margin.
+    static func onScreen(_ pointer: NSPoint, _ screenFrame: NSRect) -> Bool {
+        screenFrame.insetBy(dx: -1, dy: -1).contains(pointer)
+    }
+
+    /// Hover opens the panel only on the notch-bearing screen, inside the notch's x-range
+    /// and its collapsed height (2pt slack). The vertical upper bound matters on
+    /// multi-monitor layouts: without it a display stacked above the notch popped the
+    /// panel open from anywhere in that narrow strip.
+    static func hoverTriggers(pointer: NSPoint, screenFrame: NSRect, collapsedRect: NSRect, notchWidth: CGFloat) -> Bool {
+        guard onScreen(pointer, screenFrame) else { return false }
+        let minX = collapsedRect.midX - notchWidth / 2
+        let maxX = collapsedRect.midX + notchWidth / 2
+        return pointer.x >= minX && pointer.x <= maxX &&
+            pointer.y >= collapsedRect.minY - 2 && pointer.y <= collapsedRect.maxY + 2
+    }
+
+    /// A file being dragged wakes the Shelf when it nears the notch: 60pt of slack
+    /// either side, 30pt below — and, unlike before, bounded to the notch's screen.
+    static func dragTriggers(pointer: NSPoint, screenFrame: NSRect, collapsedRect: NSRect, notchWidth: CGFloat) -> Bool {
+        guard onScreen(pointer, screenFrame) else { return false }
+        let minX = collapsedRect.midX - notchWidth / 2 - 60
+        let maxX = collapsedRect.midX + notchWidth / 2 + 60
+        return pointer.x >= minX && pointer.x <= maxX && pointer.y >= collapsedRect.minY - 30
+    }
+}
+
+enum FallbackPollPolicy {
+    /// Netflix detection is accepted only while audio is audible; a poll while
+    /// silent can't produce a result, except to clear a detection already showing.
+    static func shouldPollNetflix(chromeRunning: Bool, audible: Bool, usingFallback: Bool) -> Bool {
+        chromeRunning && (audible || usingFallback)
+    }
+}
+
+/// What to do with an alarm whose time has come. A Mac that slept through the
+/// alarm used to blast the looping tone whenever it woke (or was relaunched) —
+/// hours late, in a meeting. Past a short grace period it is reported as missed
+/// instead; the system notification is what tells the person it was due.
+enum AlarmPolicy {
+    static let graceSeconds: TimeInterval = 120
+    enum Decision: Equatable {
+        case pending(remaining: TimeInterval)
+        case ring
+        case missed(lateBy: TimeInterval)
+    }
+    static func decide(end: Date, now: Date = Date()) -> Decision {
+        let remaining = end.timeIntervalSince(now)
+        if remaining > 0 { return .pending(remaining: remaining) }
+        let late = -remaining
+        return late <= graceSeconds ? .ring : .missed(lateBy: late)
+    }
+}
+
 // Decides whether the pointer being away from the panel should close it.
 // A panel opened with ⌥⌘N has no reason to have the pointer near it (it's
 // typically resting in a document), so distance alone used to close it within

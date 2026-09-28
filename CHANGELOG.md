@@ -15,6 +15,16 @@ git reset --hard v3.9.1
 
 ---
 
+## v3.13.3 — Los MP4 descargados se abren en cualquier lado
+
+**Arreglado**
+- **Descargas en MP4 salían en AV1.** Para un video normal de YouTube, el selector anterior elegía **AV1 a 2160p**: archivos enormes que QuickTime (en varios Macs), CapCut y la mayoría de los editores no abren. Ahora prefiere **H.264**, que se abre en todos lados. Medido con el mismo video: antes `av01 2160p`, ahora `avc1 1080p`. El costo: en YouTube, H.264 llega hasta 1080p (el 4K solo existe en AV1/VP9).
+
+**Verificación**
+- Descarga real de YouTube con los argumentos exactos de la app y las herramientas que instala la app: sale `h264 + aac`, con video y audio unidos en `.mp4`. MP3 real también comprobado (`mp3`, 19 s).
+
+---
+
 ## v3.13.2 — Descargas: las herramientas se instalan con un clic
 
 **Agregado**

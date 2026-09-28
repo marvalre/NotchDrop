@@ -853,7 +853,13 @@ final class MediaDownloader {
         var arguments: [String] {
             switch self {
             case .videoMP4:
-                return ["-f", "bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b",
+                // -S puts H.264 first. The -f selector alone lets yt-dlp's default sort
+                // pick AV1, which on a normal YouTube video meant a 2160p AV1 file that
+                // QuickTime, CapCut and most editors can't open (measured: the same
+                // video came out avc1 1080p with this). H.264 tops out at 1080p on
+                // YouTube; that's the trade for a file that opens everywhere.
+                return ["-S", "vcodec:h264,res,acodec:m4a",
+                        "-f", "bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b",
                         "--merge-output-format", "mp4"]
             case .audioMP3:
                 return ["-x", "--audio-format", "mp3", "--audio-quality", "0"]

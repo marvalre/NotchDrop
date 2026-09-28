@@ -361,5 +361,11 @@ check(MediaDownloader.classify("ERROR: Operation not permitted: '/Users/x/Downlo
 check(!MediaDownloader.friendlyError(from: safariErr).contains("prueba activar cookies"), "el mensaje de Safari ya NO dice 'activa cookies' (ya estaban activadas)")
 check(MediaDownloader.friendlyError(from: safariErr).contains("Acceso total al disco"), "el mensaje de Safari explica el permiso real")
 
+print("Descarga MP4: compatibilidad")
+let mp4Args = MediaDownloader.Format.videoMP4.arguments
+check(mp4Args.starts(with: ["-S", "vcodec:h264,res,acodec:m4a"]), "MP4 prefiere H.264 (el selector anterior elegía AV1 a 4K)")
+check(mp4Args.contains("--merge-output-format") && mp4Args.contains("mp4"), "sigue uniendo en .mp4")
+check(MediaDownloader.Format.audioMP3.arguments.contains("mp3"), "MP3 sin cambios")
+
 print("\nRESULTADO: \(passed) pass / \(failed) fail")
 exit(failed == 0 ? 0 : 1)

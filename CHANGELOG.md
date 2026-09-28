@@ -15,6 +15,22 @@ git reset --hard v3.9.1
 
 ---
 
+## v3.14.0 — Varias alarmas a la vez
+
+**Agregado**
+- **Puedes tener varias alarmas al mismo tiempo.** Pon una de 5 minutos y luego una de 8: las dos suenan a su hora. Antes la segunda reemplazaba a la primera sin avisar. Máximo 10.
+- Cada alarma pendiente aparece en su propia fila en Tools (cuenta regresiva y hora a la que suena) con su **✕** para cancelarla sin tocar las demás.
+- La pastilla del notch muestra la próxima alarma y cuántas hay: `2:14·2`.
+- Cada alarma tiene su propia notificación del sistema, así que siguen avisando aunque cierres la app.
+- Si dos vencen juntas comparten un solo tono; "Detener" (en la app o en la notificación) silencia todo lo que esté sonando.
+- La alarma única de versiones anteriores se conserva y pasa sola al nuevo formato.
+
+**Verificación**
+- 265 comprobaciones automáticas (15 nuevas del modelo de alarmas: orden, límite, alarmas perdidas, guardado, migración).
+- Prueba real con la app: dos alarmas guardadas se restauran (`2:14·2`), cancelar una deja la otra, ambas suenan a su hora (campana en la pastilla) y "Detener" vuelve a "Sin alarma activa".
+
+---
+
 ## v3.13.6 — Pendientes del escaneo
 
 **Arreglado**

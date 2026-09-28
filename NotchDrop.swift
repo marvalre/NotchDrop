@@ -1945,12 +1945,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     var captureSession: AVCaptureSession?
     var previewLayer: AVCaptureVideoPreviewLayer?
     var mirrorActive = false
-    var alarmEnd: Date?; var alarmTimer: Timer?; var alarmMins = 0
+    var alarms = AlarmStore()
+    var alarmTimer: Timer?
+    var alarmMessage: (text: String, isError: Bool)?     // "Alarma perdida…", permission errors
+    var alarmRowLabels: [String: NSTextField] = [:]
+    var alarmListSignature: [String] = []
+    var alarmListStack: NSStackView!
     var alarmRingTimer: Timer?
     var alarmSound: NSSound?
     var lastAlarmPillState = false
     let alarmNotificationID = "com.marcelo.notchdrop.alarm"
-    let alarmDateDefaultsKey = "NotchDropAlarmEnd"
+    let alarmsDefaultsKey = "NotchDropAlarms"
+    let alarmDateDefaultsKey = "NotchDropAlarmEnd"          // legacy single alarm, migrated once
     let alarmMinutesDefaultsKey = "NotchDropAlarmMinutes"
     var swClock = StopwatchClock(); var swTimer: Timer?
     var clipboard: [ClipItem] = []
@@ -2575,7 +2581,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     let islandPillW: CGFloat = 34   // width of each black pill
     let islandAlarmPillW: CGFloat = 62  // wider, so the countdown clears the notch overlap
     let islandNotchOverlap: CGFloat = 10
-    var alarmIsShowing: Bool { (alarmEnd != nil || alarmSound != nil) && !isExpanded }
+    var alarmIsShowing: Bool { (!alarms.items.isEmpty || alarmSound != nil) && !isExpanded }
     var islandPillH: CGFloat { notchHeight(for: targetScreen) }   // always matches the notch
 
     // Shared geometry for both island pill windows, factored out so it can be
@@ -3408,6 +3414,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         alarmCancelBtn = cancelBtn
         acard.addSubview(cancelBtn)
 
+        // One row per pending alarm, each with its own ✕.
+        let listStack = NSStackView(); listStack.orientation = .vertical; listStack.spacing = 6; listStack.alignment = .leading
+        listStack.translatesAutoresizingMaskIntoConstraints = false
+        alarmListStack = listStack
+        acard.addSubview(listStack)
+
         let clockAppBtn = NSButton(title: "Open Clock.app ↗", target: self, action: #selector(openClockApp))
         clockAppBtn.bezelStyle = .recessed; clockAppBtn.controlSize = .small; clockAppBtn.translatesAutoresizingMaskIntoConstraints = false
         acard.addSubview(clockAppBtn)
@@ -3420,7 +3432,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             alarmStatusLabel.topAnchor.constraint(equalTo: timeRow.bottomAnchor, constant: 12), alarmStatusLabel.leadingAnchor.constraint(equalTo: acard.leadingAnchor, constant: 16),
             alarmStatusLabel.trailingAnchor.constraint(lessThanOrEqualTo: cancelBtn.leadingAnchor, constant: -10),
             cancelBtn.centerYAnchor.constraint(equalTo: alarmStatusLabel.centerYAnchor), cancelBtn.trailingAnchor.constraint(equalTo: acard.trailingAnchor, constant: -16),
-            acard.bottomAnchor.constraint(equalTo: alarmStatusLabel.bottomAnchor, constant: 16)
+            listStack.topAnchor.constraint(equalTo: alarmStatusLabel.bottomAnchor, constant: 8),
+            listStack.leadingAnchor.constraint(equalTo: acard.leadingAnchor, constant: 16),
+            listStack.trailingAnchor.constraint(equalTo: acard.trailingAnchor, constant: -16),
+            acard.bottomAnchor.constraint(equalTo: listStack.bottomAnchor, constant: 16)
         ])
         tabToolsStack.addArrangedSubview(acard); acard.widthAnchor.constraint(equalTo: tabToolsStack.widthAnchor).isActive = true
 
@@ -4144,14 +4159,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // own) — the scheduled system notification still fires after quitting, but
         // silently. Someone quitting to save battery shouldn't lose their alarm
         // without knowing that's what just happened.
-        guard alarmEnd != nil || alarmRingTimer != nil else {
+        guard !alarms.items.isEmpty || alarmRingTimer != nil else {
             NSApp.terminate(nil)
             return
         }
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = "¿Salir con una alarma activa?"
-        alert.informativeText = "Si cierras NotchDrop ahora, la alarma ya no sonará en loop — solo el aviso silencioso del sistema a la hora programada."
+        alert.messageText = "¿Salir con alarmas activas?"
+        alert.informativeText = "Si cierras NotchDrop ahora, las alarmas ya no sonarán en loop — solo el aviso silencioso del sistema a la hora programada."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Salir de todos modos")
         alert.addButton(withTitle: "Cancelar")
@@ -5011,26 +5026,48 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             guard let self else { return }
             DispatchQueue.main.async {
                 if !granted {
-                    self.alarmStatusLabel?.stringValue = "Activa las notificaciones para usar alarmas"
-                    self.alarmStatusLabel?.textColor = NSColor.systemRed
+                    self.alarmMessage = ("Activa las notificaciones para usar alarmas", true)
+                    self.refreshAlarmStatus()
                 }
             }
         }
 
+        restoreAlarms()
+    }
+
+    // Alarms saved by the last session. Anything that came due while the app was closed
+    // is settled by the same policy as a live one (shortly overdue rings, long overdue is
+    // reported missed). Versions before 3.14 stored a single alarm under two other keys.
+    func restoreAlarms() {
         let defaults = UserDefaults.standard
-        let timestamp = defaults.double(forKey: alarmDateDefaultsKey)
-        guard timestamp > 0 else { return }
-        // A saved alarm that came due while the app was closed is settled by the same
-        // policy as a live one: shortly overdue rings, long overdue is reported missed.
-        alarmEnd = Date(timeIntervalSince1970: timestamp)
-        alarmMins = defaults.integer(forKey: alarmMinutesDefaultsKey)
-        alarmTimer?.invalidate()
-        alarmTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tickAlarm() }
-        alarmCancelBtn?.isHidden = false
+        var items: [AlarmItem] = defaults.data(forKey: alarmsDefaultsKey).map(AlarmStore.decode) ?? []
+        if items.isEmpty {
+            items = AlarmStore.migrateLegacy(endTimestamp: defaults.double(forKey: alarmDateDefaultsKey),
+                                             minutes: defaults.integer(forKey: alarmMinutesDefaultsKey))
+        }
+        defaults.removeObject(forKey: alarmDateDefaultsKey)
+        defaults.removeObject(forKey: alarmMinutesDefaultsKey)
+        var store = AlarmStore()
+        for i in items { store.add(end: i.end, minutes: i.minutes, id: i.id) }
+        alarms = store
+        persistAlarms()
+        guard !alarms.items.isEmpty else { return }
+        startAlarmTimer()
         tickAlarm()
     }
 
-    func scheduleNativeAlarm(minutes: Int, fireDate: Date) {
+    func persistAlarms() {
+        if alarms.items.isEmpty { UserDefaults.standard.removeObject(forKey: alarmsDefaultsKey) }
+        else { UserDefaults.standard.set(AlarmStore.encode(alarms.items), forKey: alarmsDefaultsKey) }
+    }
+
+    func startAlarmTimer() {
+        guard alarmTimer == nil else { return }
+        alarmTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tickAlarm() }
+    }
+
+    func scheduleNativeAlarm(_ item: AlarmItem) {
+        let minutes = item.minutes, fireDate = item.end
         let center = UNUserNotificationCenter.current()
         let content = UNMutableNotificationContent()
         content.title = "⏰ Alarma de NotchDrop"
@@ -5046,16 +5083,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // "set for 7:30" alarm doesn't drift by up to 59 seconds against the clock.
         let interval = max(1, fireDate.timeIntervalSinceNow)
         let trigger = UNTimeIntervalNotificationTrigger(timeInterval: interval, repeats: false)
-        let request = UNNotificationRequest(identifier: alarmNotificationID, content: content, trigger: trigger)
-        center.removePendingNotificationRequests(withIdentifiers: [alarmNotificationID])
+        let request = UNNotificationRequest(identifier: notificationID(for: item), content: content, trigger: trigger)
         center.add(request) { [weak self] error in
             guard let error, let self else { return }
             DispatchQueue.main.async {
-                self.alarmStatusLabel.stringValue = "No se pudo programar la alarma: \(error.localizedDescription)"
-                self.alarmStatusLabel.textColor = NSColor.systemRed
+                self.alarmMessage = ("No se pudo programar la alarma: \(error.localizedDescription)", true)
+                self.refreshAlarmStatus()
             }
         }
     }
+
+    func notificationID(for item: AlarmItem) -> String { "\(alarmNotificationID).\(item.id)" }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification,
@@ -5068,7 +5106,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        if response.notification.request.identifier == alarmNotificationID {
+        if response.notification.request.identifier.hasPrefix(alarmNotificationID) {
             DispatchQueue.main.async { [weak self] in self?.stopAlarmRinging() }
         } else if response.notification.request.identifier == updateNotificationID {
             DispatchQueue.main.async { [weak self] in
@@ -5079,18 +5117,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         completionHandler()
     }
 
-    // Shared by both the preset buttons and the specific-time picker.
+    // Shared by both the preset buttons and the specific-time picker. Adds to the set —
+    // it no longer replaces whatever alarm was already running.
     func activateAlarm(minutes: Int, end: Date) {
         stopAlarmRinging()
-        alarmMins = minutes
-        alarmEnd = end
-        alarmTimer?.invalidate()
-        alarmTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in self?.tickAlarm() }
-        alarmCancelBtn?.title = "Cancelar"
-        alarmCancelBtn?.isHidden = false
-        UserDefaults.standard.set(end.timeIntervalSince1970, forKey: alarmDateDefaultsKey)
-        UserDefaults.standard.set(minutes, forKey: alarmMinutesDefaultsKey)
-        scheduleNativeAlarm(minutes: minutes, fireDate: end)
+        alarmMessage = nil
+        let item = alarms.add(end: end, minutes: minutes)
+        persistAlarms()
+        scheduleNativeAlarm(item)
+        startAlarmTimer()
         tickAlarm()
     }
 
@@ -5109,67 +5144,103 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         activateAlarm(minutes: minutes, end: target)
     }
 
+    // The button beside the status text only exists while an alarm is ringing ("Detener");
+    // pending alarms are cancelled one by one from their own row.
     @objc func cancelAlarm() {
-        // While ringing, this same button reads "Detener" — route to the silencer.
-        guard alarmRingTimer == nil else { stopAlarmRinging(); return }
-        alarmTimer?.invalidate(); alarmTimer = nil
-        alarmEnd = nil
-        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [alarmNotificationID])
-        UserDefaults.standard.removeObject(forKey: alarmDateDefaultsKey)
-        UserDefaults.standard.removeObject(forKey: alarmMinutesDefaultsKey)
-        alarmStatusLabel.stringValue = "Sin alarma activa"
-        alarmStatusLabel.textColor = C.textMuted
-        alarmCancelBtn?.isHidden = true
+        if alarmRingTimer != nil || alarmSound != nil { stopAlarmRinging() }
+    }
+
+    @objc func cancelAlarmRow(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue, let item = alarms.items.first(where: { $0.id == id }) else { return }
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [notificationID(for: item)])
+        alarms.remove(id: id)
+        persistAlarms()
+        alarmMessage = nil
+        if alarms.items.isEmpty { alarmTimer?.invalidate(); alarmTimer = nil }
+        refreshAlarmList()
+        refreshAlarmStatus()
         updateUI()
     }
 
     func tickAlarm() {
-        guard let e = alarmEnd else { return }
-        let r: TimeInterval
-        switch AlarmPolicy.decide(end: e) {
-        case .pending(let remaining):
-            r = remaining
-        case .ring:
-            alarmTimer?.invalidate(); alarmTimer = nil; alarmEnd = nil
-            UserDefaults.standard.removeObject(forKey: alarmDateDefaultsKey)
-            UserDefaults.standard.removeObject(forKey: alarmMinutesDefaultsKey)
-            startAlarmRinging()
-            return
-        case .missed:
-            alarmTimer?.invalidate(); alarmTimer = nil; alarmEnd = nil
-            UserDefaults.standard.removeObject(forKey: alarmDateDefaultsKey)
-            UserDefaults.standard.removeObject(forKey: alarmMinutesDefaultsKey)
+        let settled = alarms.settle()
+        if !settled.ring.isEmpty || !settled.missed.isEmpty { persistAlarms() }
+        if !settled.missed.isEmpty {
             let f = DateFormatter(); f.dateFormat = "h:mm a"
-            alarmStatusLabel?.stringValue = "⏰ Alarma perdida — era a las \(f.string(from: e))"
-            alarmStatusLabel?.textColor = C.textMuted
-            alarmCancelBtn?.isHidden = true
-            updateUI()
+            let times = settled.missed.map { f.string(from: $0.end) }.joined(separator: ", ")
+            alarmMessage = (settled.missed.count == 1 ? "⏰ Alarma perdida — era a las \(times)" : "⏰ Alarmas perdidas — eran a las \(times)", false)
+        }
+        if !settled.ring.isEmpty {
+            alarmMessage = nil
+            startAlarmRinging()
+        }
+        if alarms.items.isEmpty { alarmTimer?.invalidate(); alarmTimer = nil }
+
+        if alarmSound == nil, let next = alarms.next {
+            islandAlarmLabel?.stringValue = AlarmStore.pillText(remaining: next.end.timeIntervalSinceNow, count: alarms.items.count)
+        }
+        refreshAlarmList()
+        refreshAlarmStatus()
+        updateUI()
+    }
+
+    // Rebuilds the rows only when the set of alarms changed; otherwise it just rewrites
+    // the countdown text, which is what runs every second.
+    func refreshAlarmList() {
+        guard alarmListStack != nil else { return }
+        let f = DateFormatter(); f.dateFormat = "h:mm a"
+        let signature = alarms.items.map(\.id)
+        if signature != alarmListSignature {
+            alarmListSignature = signature
+            alarmRowLabels = [:]
+            alarmListStack.arrangedSubviews.forEach { alarmListStack.removeArrangedSubview($0); $0.removeFromSuperview() }
+            for item in alarms.items {
+                let label = lbl("", 12, .medium, C.textPrimary)
+                let cancel = NSButton(title: "✕", target: self, action: #selector(cancelAlarmRow(_:)))
+                cancel.bezelStyle = .recessed; cancel.controlSize = .small
+                cancel.identifier = NSUserInterfaceItemIdentifier(item.id)
+                cancel.toolTip = "Cancelar esta alarma"
+                let row = NSStackView(views: [label, cancel]); row.orientation = .horizontal; row.spacing = 8
+                alarmListStack.addArrangedSubview(row)
+                alarmRowLabels[item.id] = label
+            }
+        }
+        for item in alarms.items {
+            let r = max(0, item.end.timeIntervalSinceNow)
+            alarmRowLabels[item.id]?.stringValue = String(format: "⏰ %02d:%02d restantes — suena a las %@", Int(r) / 60, Int(r) % 60, f.string(from: item.end))
+        }
+    }
+
+    // One line of summary above the rows: ringing, a notice, or how many are set.
+    func refreshAlarmStatus() {
+        guard alarmStatusLabel != nil else { return }
+        if alarmSound != nil || alarmRingTimer != nil {
+            alarmStatusLabel.stringValue = "✅ ¡ALARMA! — sonando…"
+            alarmStatusLabel.textColor = C.spotifyGreen
+            alarmCancelBtn?.title = "Detener"; alarmCancelBtn?.isHidden = false
             return
         }
-        let formatter = DateFormatter(); formatter.dateFormat = "h:mm a"
-        alarmStatusLabel.stringValue = String(format: "⏰ %02d:%02d restantes — suena a las %@", Int(r)/60, Int(r)%60, formatter.string(from: e))
-        // The pill is only 34pt wide, so "59:59" would crowd or clip it. Above ten
-        // minutes a coarse "59m" is both legible and enough at a glance; the exact
-        // mm:ss only starts mattering near the end.
-        let secondsLeft = Int(r)
-        islandAlarmLabel?.stringValue = secondsLeft >= 600
-            ? "\(secondsLeft / 60)m"
-            : String(format: "%d:%02d", secondsLeft / 60, secondsLeft % 60)
-        updateUI()
+        alarmCancelBtn?.isHidden = true
+        if let m = alarmMessage {
+            alarmStatusLabel.stringValue = m.text
+            alarmStatusLabel.textColor = m.isError ? NSColor.systemRed : C.textMuted
+        } else if alarms.items.isEmpty {
+            alarmStatusLabel.stringValue = "Sin alarma activa"
+            alarmStatusLabel.textColor = C.textMuted
+        } else {
+            let n = alarms.items.count
+            alarmStatusLabel.stringValue = n == 1 ? "1 alarma activa" : "\(n) alarmas activas"
+            alarmStatusLabel.textColor = C.textMuted
+        }
     }
 
     // Plays an actual repeating alarm tone (system notification sounds are a
     // single quiet ping, not a real alarm) until the user stops it — from the
     // in-app "Detener" button, the notification's own action, or tapping the
     // notification itself. Auto-stops after ~3 minutes so a missed alarm
-    // doesn't ring forever in the background.
+    // doesn't ring forever in the background. Several alarms due together share one tone.
     func startAlarmRinging() {
-        alarmStatusLabel.stringValue = "✅ ¡ALARMA! — sonando…"
-        alarmStatusLabel.textColor = C.spotifyGreen
-        alarmCancelBtn?.title = "Detener"
-        alarmCancelBtn?.isHidden = false
         islandAlarmLabel?.stringValue = "🔔"
-        updateUI()
 
         // A looping synthesized tone rather than a system beep replayed on a timer:
         // the old approach was audibly a notification going off repeatedly, with
@@ -5183,16 +5254,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         alarmRingTimer = Timer.scheduledTimer(withTimeInterval: 180, repeats: false) { [weak self] _ in
             self?.stopAlarmRinging()
         }
+        refreshAlarmStatus()
+        updateUI()
     }
 
     func stopAlarmRinging() {
         guard alarmRingTimer != nil || alarmSound != nil else { return }
         alarmRingTimer?.invalidate(); alarmRingTimer = nil
         alarmSound?.stop(); alarmSound = nil
-        alarmCancelBtn?.title = "Cancelar"
-        alarmCancelBtn?.isHidden = true
-        alarmStatusLabel.stringValue = "Sin alarma activa"
-        alarmStatusLabel.textColor = C.textMuted
+        refreshAlarmStatus()
         updateUI()
     }
     @objc func openClockApp() { NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Clock.app")) }
@@ -6089,6 +6159,64 @@ enum AlarmPolicy {
         if remaining > 0 { return .pending(remaining: remaining) }
         let late = -remaining
         return late <= graceSeconds ? .ring : .missed(lateBy: late)
+    }
+}
+
+/// The set of pending alarms. There used to be exactly one, so setting a second silently
+/// replaced the first; now any number (up to `maxAlarms`) run side by side.
+struct AlarmItem: Codable, Equatable {
+    var id: String
+    var end: Date
+    var minutes: Int
+}
+
+struct AlarmStore {
+    static let maxAlarms = 10
+    private(set) var items: [AlarmItem] = []
+
+    var next: AlarmItem? { items.first }
+
+    @discardableResult
+    mutating func add(end: Date, minutes: Int, id: String = UUID().uuidString) -> AlarmItem {
+        let item = AlarmItem(id: id, end: end, minutes: minutes)
+        items.append(item)
+        items.sort { $0.end < $1.end }
+        if items.count > Self.maxAlarms { items.removeLast(items.count - Self.maxAlarms) }
+        return item
+    }
+
+    mutating func remove(id: String) { items.removeAll { $0.id == id } }
+
+    /// Takes every alarm whose time has come out of the set and says what to do with each,
+    /// using the same grace rule as a single alarm (`AlarmPolicy`).
+    mutating func settle(now: Date = Date()) -> (ring: [AlarmItem], missed: [AlarmItem]) {
+        var ring: [AlarmItem] = [], missed: [AlarmItem] = []
+        for item in items {
+            switch AlarmPolicy.decide(end: item.end, now: now) {
+            case .pending: break
+            case .ring: ring.append(item)
+            case .missed: missed.append(item)
+            }
+        }
+        let done = Set((ring + missed).map(\.id))
+        items.removeAll { done.contains($0.id) }
+        return (ring, missed)
+    }
+
+    static func encode(_ items: [AlarmItem]) -> Data { (try? JSONEncoder().encode(items)) ?? Data() }
+    static func decode(_ data: Data) -> [AlarmItem] { (try? JSONDecoder().decode([AlarmItem].self, from: data)) ?? [] }
+
+    /// Versions before this kept one alarm as a bare timestamp + minutes.
+    static func migrateLegacy(endTimestamp: TimeInterval, minutes: Int) -> [AlarmItem] {
+        guard endTimestamp > 0 else { return [] }
+        return [AlarmItem(id: UUID().uuidString, end: Date(timeIntervalSince1970: endTimestamp), minutes: max(1, minutes))]
+    }
+
+    /// The island pill is tiny: "12m" above ten minutes, "2:05" below; "·N" when several are set.
+    static func pillText(remaining: TimeInterval, count: Int) -> String {
+        let secs = max(0, Int(remaining))
+        let base = secs >= 600 ? "\(secs / 60)m" : String(format: "%d:%02d", secs / 60, secs % 60)
+        return count > 1 ? "\(base)·\(count)" : base
     }
 }
 

@@ -31,7 +31,7 @@ En Macs **sin** notch físico dibuja uno simulado, así que funciona en cualquie
 - Nunca sobrescribe el original: escribe al lado con nombre distinto.
 
 ### ⚡ Tools
-- **Alarmas** por preset o por hora específica, con un tono de alarma real en loop (no un bip de notificación). Se detiene desde el panel o desde la notificación.
+- **Alarmas** por preset o por hora específica, con un tono de alarma real en loop (no un bip de notificación). **Puedes tener varias a la vez** (hasta 10), cada una con su cuenta regresiva y su ✕ para cancelarla. Se detienen desde el panel o desde la notificación.
 - **Cronómetro.**
 - **Historial de portapapeles** con texto e imágenes. Respeta los marcadores de "contenido confidencial" que usan los gestores de contraseñas, así que las contraseñas copiadas nunca se guardan.
 

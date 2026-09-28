@@ -1738,6 +1738,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     var notchDiagnosticLabel: NSTextField!
     var downloaderStatusLabel: NSTextField!
     var cookieBrowserPopup: NSPopUpButton!
+    var openedByKeyboard = false
+    var pointerEnteredSinceKeyboardOpen = false
     var updateStatusLabel: NSTextField!
     var updateActionBtn: NSButton!
     var availableUpdate: UpdateRelease?
@@ -2046,9 +2048,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 let expandedRect = self.getPanelRect(expanded: true)
                 // Collapse if mouse moves far outside the expanded panel (give 10px buffer)
                 let paddedRect = expandedRect.insetBy(dx: -10, dy: -10)
-                if !paddedRect.contains(loc) {
-                    self.collapsePanel()
-                }
+                let d = AutoCollapsePolicy.decide(pointer: loc, paddedRect: paddedRect,
+                                                  keyboardOpened: self.openedByKeyboard,
+                                                  hasEntered: self.pointerEnteredSinceKeyboardOpen)
+                self.pointerEnteredSinceKeyboardOpen = d.hasEntered
+                if d.collapse { self.collapsePanel() }
             }
         }
         
@@ -3901,7 +3905,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     // Deliberate user actions — the two places haptic feedback is wanted.
     @objc func toggleExpandedState() {
-        if isExpanded { collapsePanel(withHaptic: true) } else { expandPanel(withHaptic: true) }
+        if isExpanded { collapsePanel(withHaptic: true); return }
+        expandPanel(withHaptic: true)
+        // Only the ⌥⌘N hotkey reaches here. expandPanel resets the flag, so set it after.
+        if isExpanded { openedByKeyboard = true; pointerEnteredSinceKeyboardOpen = false }
     }
     @objc func collapsedBoxClicked() {
         guard !isExpanded, !isTransitioning else { return }
@@ -3914,6 +3921,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // indistinguishable from a phantom click, sound and all.
     func expandPanel(forFileDrop: Bool = false, withHaptic: Bool = false) {
         guard !isExpanded, !isTransitioning else { return }
+        openedByKeyboard = false; pointerEnteredSinceKeyboardOpen = false
         // A no-op on anything without a Force Touch trackpad (external mouse,
         // older trackpads) — safe to call unconditionally.
         if withHaptic {
@@ -3963,6 +3971,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // changed, clicked elsewhere) must stay silent.
     func collapsePanel(withHaptic: Bool = false) {
         guard isExpanded, !isTransitioning else { return }
+        openedByKeyboard = false; pointerEnteredSinceKeyboardOpen = false
         if withHaptic {
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         }
@@ -4067,9 +4076,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         if let responder = panel.firstResponder as? NSView, responder.isDescendant(of: expandedBox) { return }
         let expandedRect = getPanelRect(expanded: true)
         let paddedRect = expandedRect.insetBy(dx: -10, dy: -10)
-        if !paddedRect.contains(NSEvent.mouseLocation) {
-            collapsePanel()
-        }
+        let d = AutoCollapsePolicy.decide(pointer: NSEvent.mouseLocation, paddedRect: paddedRect,
+                                          keyboardOpened: openedByKeyboard, hasEntered: pointerEnteredSinceKeyboardOpen)
+        pointerEnteredSinceKeyboardOpen = d.hasEntered
+        if d.collapse { collapsePanel() }
     }
 
     func poll() {
@@ -5478,6 +5488,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 // ═══════════════════════════════════════════════════════════════════════════
 // MARK: - Entry
 // ═══════════════════════════════════════════════════════════════════════════
+// Decides whether the pointer being away from the panel should close it.
+// A panel opened with ⌥⌘N has no reason to have the pointer near it (it's
+// typically resting in a document), so distance alone used to close it within
+// about a second of opening. Until the pointer has been inside once, a
+// keyboard-opened panel stays open; afterwards it behaves like any other.
+enum AutoCollapsePolicy {
+    static func decide(pointer: NSPoint, paddedRect: NSRect, keyboardOpened: Bool, hasEntered: Bool) -> (collapse: Bool, hasEntered: Bool) {
+        let inside = paddedRect.contains(pointer)
+        let entered = hasEntered || inside
+        if inside { return (false, entered) }
+        if keyboardOpened && !entered { return (false, entered) }
+        return (true, entered)
+    }
+}
+
 // MARK: - Updates
 
 enum UpdateVersion {

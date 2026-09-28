@@ -169,5 +169,19 @@ if let ffmpeg = FileConverter.ffmpegPath() {
     check(leftovers.isEmpty, "no quedan archivos vacíos tras comprimir (\(leftovers))")
 } else { print("  (ffmpeg no instalado: se omiten las pruebas de compresión real)") }
 
+print("AutoCollapsePolicy (⌥⌘N)")
+let panelRect = NSRect(x: 500, y: 700, width: 440, height: 220)
+let inside = NSPoint(x: 700, y: 800), outside = NSPoint(x: 100, y: 100)
+var d = AutoCollapsePolicy.decide(pointer: outside, paddedRect: panelRect, keyboardOpened: false, hasEntered: false)
+check(d.collapse, "abierto con el mouse: el mouse lejos SÍ cierra")
+d = AutoCollapsePolicy.decide(pointer: outside, paddedRect: panelRect, keyboardOpened: true, hasEntered: false)
+check(!d.collapse && !d.hasEntered, "abierto con ⌥⌘N: el mouse lejos NO cierra antes de entrar")
+d = AutoCollapsePolicy.decide(pointer: inside, paddedRect: panelRect, keyboardOpened: true, hasEntered: false)
+check(!d.collapse && d.hasEntered, "abierto con ⌥⌘N: entrar al panel lo marca como visitado")
+d = AutoCollapsePolicy.decide(pointer: outside, paddedRect: panelRect, keyboardOpened: true, hasEntered: true)
+check(d.collapse, "abierto con ⌥⌘N: después de haber entrado, salir SÍ cierra")
+d = AutoCollapsePolicy.decide(pointer: inside, paddedRect: panelRect, keyboardOpened: false, hasEntered: false)
+check(!d.collapse, "mouse dentro nunca cierra")
+
 print("\nRESULTADO: \(passed) pass / \(failed) fail")
 exit(failed == 0 ? 0 : 1)

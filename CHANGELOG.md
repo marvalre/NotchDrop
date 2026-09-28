@@ -15,6 +15,13 @@ git reset --hard v3.9.1
 
 ---
 
+## v3.13.1 — Currency ya no confunde "1,000" con 1
+
+**Arreglado**
+- En la pestaña Currency, escribir un monto con separador de miles como `1,000` se leía como `1` — el parser convertía cualquier coma en punto decimal sin distinguir "coma de miles" de "coma decimal". Ahora una coma seguida de exactamente 3 dígitos (o más de una coma) se trata como separador de miles y se descarta; una coma con 1-2 dígitos (o ninguno) sigue leyéndose como decimal, así que `1,5` sigue siendo 1.5.
+
+---
+
 ## v3.13.0 — Actualizaciones automáticas firmadas
 
 **Agregado**

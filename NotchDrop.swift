@@ -5177,9 +5177,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // those, so typing a half-finished "5*" would take the whole app down.
     // Returns nil for anything it can't evaluate; the caller treats that as
     // "no amount yet" rather than an error.
+    // Disambiguates "," as either a decimal point ("1,5" → 1.5) or a thousands
+    // separator ("1,000" → 1000), since both are common depending on how
+    // someone learned to type numbers. A single "," followed by exactly 3
+    // digits (nothing else glued to it), or more than one ",", can only be a
+    // thousands separator — grouping into other sizes or writing three
+    // decimal digits on a currency amount is not how people actually type —
+    // so it's dropped instead of becoming a second decimal point. Everything
+    // else (a single "," followed by 1-2 digits, or none) is read as decimal.
+    func normalizedNumberSeparators(_ input: String) -> String {
+        if let lastComma = input.lastIndex(of: ","), let lastDot = input.lastIndex(of: ".") {
+            if lastComma > lastDot {
+                return input.replacingOccurrences(of: ".", with: "").replacingOccurrences(of: ",", with: ".")
+            } else {
+                return input.replacingOccurrences(of: ",", with: "")
+            }
+        }
+        let commaCount = input.filter { $0 == "," }.count
+        if commaCount > 1 {
+            return input.replacingOccurrences(of: ",", with: "")
+        }
+        if commaCount == 1, let commaIndex = input.firstIndex(of: ",") {
+            let digitsAfter = input[input.index(after: commaIndex)...].prefix(while: { $0.isNumber }).count
+            if digitsAfter == 3 {
+                return input.replacingOccurrences(of: ",", with: "")
+            }
+        }
+        return input.replacingOccurrences(of: ",", with: ".")
+    }
+
     func evaluateArithmetic(_ input: String) -> Double? {
-        // Accept both decimal separators — people type "1,5" as readily as "1.5".
-        let normalized = input.replacingOccurrences(of: ",", with: ".")
+        let normalized = normalizedNumberSeparators(input)
 
         enum Token: Equatable { case number(Double), plus, minus, times, divide, lparen, rparen }
         var tokens: [Token] = []

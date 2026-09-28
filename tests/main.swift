@@ -310,5 +310,56 @@ do {
     if case .failure = convertSync(empty, "png") { check(true, "PDF inválido falla con mensaje") } else { check(false, "PDF inválido debía fallar") }
 }
 
+print("ToolInstaller: hash y sumas")
+check(ToolInstaller.sha256Hex(Data("abc".utf8)) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256 de 'abc' (vector estándar)")
+let sums = """
+0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202  yt-dlp_macos
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  yt-dlp_macos.zip
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb *yt-dlp
+"""
+check(ToolInstaller.parseSums(sums, file: "yt-dlp_macos") == "0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202", "SHA2-256SUMS: encuentra la línea exacta (no yt-dlp_macos.zip)")
+check(ToolInstaller.parseSums(sums, file: "yt-dlp") == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "acepta el marcador binario '*' de sha256sum")
+check(ToolInstaller.parseSums(sums, file: "no-existe") == nil, "archivo ausente → nil")
+check(ToolInstaller.parseSums("", file: "x") == nil, "texto vacío → nil")
+
+print("ToolInstaller: qué se descarga")
+for arm in [true, false] {
+    let specs = ToolInstaller.specs(arm64: arm)
+    check(specs.map(\.name) == ["yt-dlp", "ffmpeg", "ffprobe"], "\(arm ? "arm64" : "x64"): yt-dlp, ffmpeg, ffprobe")
+    check(specs.allSatisfy { $0.url.scheme == "https" }, "\(arm ? "arm64" : "x64"): todo por https")
+    for sp in specs where sp.name != "yt-dlp" {
+        check(sp.sha256?.count == 64 && sp.sha256!.allSatisfy { $0.isHexDigit }, "\(arm ? "arm64" : "x64") \(sp.name): hash fijo de 64 hex")
+        check(sp.url.absoluteString.contains(arm ? "darwin-arm64" : "darwin-x64"), "\(arm ? "arm64" : "x64") \(sp.name): arquitectura correcta en la URL")
+    }
+    check(specs[0].sha256 == nil && specs[0].sumsURL != nil && specs[0].sumsEntry == "yt-dlp_macos", "yt-dlp: hash tomado del SHA2-256SUMS del release")
+}
+check(ToolInstaller.specs(arm64: true)[1].sha256 != ToolInstaller.specs(arm64: false)[1].sha256, "hashes distintos por arquitectura")
+
+print("ToolLocator")
+do {
+    let d = FileManager.default.temporaryDirectory.appendingPathComponent("nd-loc-\(UUID().uuidString)")
+    try! FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: d) }
+    let exe = d.appendingPathComponent("herramienta-de-prueba")
+    check(ToolLocator.find("herramienta-de-prueba", extraDirectories: [d]) == nil, "no existe → nil")
+    try! "#!/bin/sh\necho hola\n".write(to: exe, atomically: true, encoding: .utf8)
+    check(ToolLocator.find("herramienta-de-prueba", extraDirectories: [d]) == nil, "existe pero sin permiso de ejecución → nil")
+    try! FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exe.path)
+    check(ToolLocator.find("herramienta-de-prueba", extraDirectories: [d])?.path == exe.path, "ejecutable en la carpeta propia → lo encuentra")
+    check(ToolLocator.find("herramienta-de-prueba", extraDirectories: []) == nil, "sin esa carpeta → nil")
+}
+
+print("MediaDownloader: clasificación de errores reales")
+let safariErr = "ERROR: [Errno 1] Operation not permitted: '/Users/juank/Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies'"
+check(MediaDownloader.classify(safariErr) == .safariCookiesBlocked, "Safari sin Acceso total al disco (error real reproducido) → safariCookiesBlocked")
+check(MediaDownloader.classify("ERROR: Postprocessing: ffprobe and ffmpeg not found. Please install or provide the path using --ffmpeg-location") == .missingConversionTools, "ffmpeg ausente (el de la captura de tu amigo)")
+check(MediaDownloader.classify("ERROR: [youtube] x: Sign in to confirm you're not a bot. Use --cookies-from-browser or --cookies for the authentication.") == .loginRequired, "YouTube pide sesión → loginRequired")
+check(MediaDownloader.classify("ERROR: [Instagram] x: Requested content is not available, rate-limit reached or login required") == .loginRequired, "Instagram login")
+check(MediaDownloader.classify("ERROR: Unable to extract universal data for rehydration") == .tiktokBlocked, "TikTok anti-bot")
+check(MediaDownloader.classify("ERROR: Unsupported URL: https://x.com") == .unsupported, "sitio no soportado")
+check(MediaDownloader.classify("ERROR: Operation not permitted: '/Users/x/Downloads/a.mp4'") == .other, "'Operation not permitted' en otra ruta NO es de cookies de Safari")
+check(!MediaDownloader.friendlyError(from: safariErr).contains("prueba activar cookies"), "el mensaje de Safari ya NO dice 'activa cookies' (ya estaban activadas)")
+check(MediaDownloader.friendlyError(from: safariErr).contains("Acceso total al disco"), "el mensaje de Safari explica el permiso real")
+
 print("\nRESULTADO: \(passed) pass / \(failed) fail")
 exit(failed == 0 ? 0 : 1)

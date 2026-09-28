@@ -89,8 +89,10 @@ Cada versión se publica con una firma Ed25519 (`NotchDrop-X.zip.sig`) y la app 
 
 | Herramienta | Para qué | Instalar |
 |---|---|---|
-| `yt-dlp` | descargar links | `brew install yt-dlp` |
-| `ffmpeg` | convertir video/audio | `brew install ffmpeg` |
+| `yt-dlp` | descargar links | botón **Instalar herramientas** en la app (o `brew install yt-dlp`) |
+| `ffmpeg` / `ffprobe` | convertir video/audio y extraer MP3 | botón **Instalar herramientas** en la app (o `brew install ffmpeg`) |
+
+**Instalación con un clic.** La app puede descargar estas herramientas sola (botón *Instalar herramientas* en Shelf y en Ajustes): sin Terminal, sin Homebrew y sin contraseña de administrador. Se guardan en `~/Library/Application Support/NotchDrop/bin` y cada descarga se verifica con un SHA-256 antes de ejecutarse (los de ffmpeg están fijados en el código; el de yt-dlp viene del `SHA2-256SUMS` de su release). Vienen de terceros y no se distribuyen dentro de NotchDrop: [yt-dlp](https://github.com/yt-dlp/yt-dlp) (Unlicense) y las compilaciones estáticas de ffmpeg de [eugeneware/ffmpeg-static](https://github.com/eugeneware/ffmpeg-static) (GPL). Si ya las tienes con Homebrew, la app usa esas.
 
 Las conversiones de **imagen y PDF no necesitan nada** — usan frameworks nativos de macOS.
 

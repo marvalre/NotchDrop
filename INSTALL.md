@@ -43,26 +43,19 @@ Todo esto se procesa **en tu Mac**. NotchDrop no manda nada a internet, salvo:
 - Cuando tú pegas un link para descargar un video (usa `yt-dlp`, que se conecta a ese sitio para bajarlo).
 - La pestaña **Currency**, que consulta tasas de cambio públicas (sin API key, sin cuenta).
 
-## 5. Herramientas opcionales
+## 5. Herramientas para descargar y convertir (un clic)
 
-Algunas funciones necesitan una herramienta externa gratuita instalada. Si no la tienes, la app simplemente avisa que falta — nada se rompe.
+Descargar videos/audio y convertir o comprimir video y audio necesitan dos programas gratuitos: **yt-dlp** y **ffmpeg**. **No tienes que instalarlos tú ni abrir la Terminal**: la app los descarga sola.
 
-Abre **Terminal** (Cmd+Espacio, escribe "Terminal") y pega:
+1. Abre la pestaña **Shelf** (o **Ajustes → Descarga de links**).
+2. Si faltan, verás el botón **Instalar herramientas**. Púlsalo.
+3. Espera cerca de un minuto (son unos 75 MB). Cuando diga "✓ Herramientas instaladas", ya puedes descargar.
 
-```bash
-brew install yt-dlp ffmpeg
-```
-
-- `yt-dlp` → para descargar videos de TikTok/Instagram/YouTube/X, etc.
-- `ffmpeg` → para convertir/comprimir video y audio.
-
-Si no tienes Homebrew instalado, primero corre esto y sigue las instrucciones en pantalla:
-
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-```
+Se guardan en `~/Library/Application Support/NotchDrop/bin`, no piden contraseña y no necesitan Homebrew. Si ya los tienes instalados con Homebrew, la app usa esos.
 
 Convertir imágenes y PDF **no necesita nada de esto** — funciona directo.
+
+> **Cookies de Safari:** si eliges Safari en Ajustes para descargar contenido que pide iniciar sesión y falla, macOS está bloqueando esas cookies. Dale **Acceso total al disco** a NotchDrop (Configuración del Sistema → Privacidad y Seguridad → Acceso total al disco) o elige Chrome.
 
 ## 6. Usarla
 

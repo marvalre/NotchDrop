@@ -605,6 +605,189 @@ final class MediaRemoteBridge {
     }
 }
 
+// MARK: - Tools (yt-dlp, ffmpeg, ffprobe)
+
+// Where the external tools live. System installs (Homebrew, MacPorts, ~/.local)
+// win, since a user who set those up should keep getting them; the app's own
+// copy under Application Support is the fallback ToolInstaller fills in.
+enum ToolLocator {
+    static let systemDirectories = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin", NSHomeDirectory() + "/.local/bin"]
+
+    static func find(_ name: String, extraDirectories: [URL] = [ToolInstaller.directory]) -> URL? {
+        let dirs = systemDirectories + extraDirectories.map(\.path)
+        return dirs.map { ($0 as NSString).appendingPathComponent(name) }
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
+            .map { URL(fileURLWithPath: $0) }
+    }
+}
+
+struct ToolSpec {
+    let name: String            // file name inside the bin directory
+    let url: URL
+    let sha256: String?         // pinned digest of the DOWNLOADED bytes; nil → read it from sumsURL
+    let sumsURL: URL?
+    let sumsEntry: String?
+    let gunzip: Bool
+    let versionArgs: [String]   // a command that must exit 0 for the tool to count as working
+}
+
+enum ToolInstallError: Error {
+    case download(String, String), checksumUnavailable(String), badChecksum(String), decompress(String), notRunnable(String), write(String)
+    var message: String {
+        switch self {
+        case .download(let n, let why): return "No pude descargar \(n): \(why)"
+        case .checksumUnavailable(let n): return "No pude verificar \(n) (no encontré su suma de comprobación). No se instaló."
+        case .badChecksum(let n): return "\(n) no pasó la verificación de integridad y no se instaló. Intenta de nuevo."
+        case .decompress(let n): return "No pude descomprimir \(n)."
+        case .notRunnable(let n): return "\(n) se descargó pero no se puede ejecutar en este Mac."
+        case .write(let why): return "No pude guardar las herramientas: \(why)"
+        }
+    }
+}
+
+// Installs yt-dlp, ffmpeg and ffprobe as plain files in the app's own folder, so
+// nobody has to open Terminal, install Homebrew (which needs an admin password
+// and an Xcode dialog) or type a command. Every download is checked against a
+// SHA-256 before it's made executable; the ffmpeg builds are pinned to digests
+// compiled into the app, yt-dlp's comes from the SHA2-256SUMS of the same release.
+enum ToolInstaller {
+    static var directory: URL {
+        (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support"))
+            .appendingPathComponent("NotchDrop/bin")
+    }
+
+    static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    // "<64 hex>  name" or "<64 hex> *name" (sha256sum's binary marker). Exact name match.
+    static func parseSums(_ text: String, file: String) -> String? {
+        for line in text.split(whereSeparator: \.isNewline) {
+            let parts = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+            guard parts.count == 2, parts[0].count == 64 else { continue }
+            let name = parts[1].trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "*"))
+            if name == file { return String(parts[0]).lowercased() }
+        }
+        return nil
+    }
+
+    static var isArm64: Bool {
+        #if arch(arm64)
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    static func specs(arm64: Bool = ToolInstaller.isArm64) -> [ToolSpec] {
+        let ffBase = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1"
+        let arch = arm64 ? "arm64" : "x64"
+        let ffmpegSHA = arm64 ? "8923876afa8db5585022d7860ec7e589af192f441c56793971276d450ed3bbfa"
+                              : "929b375c1182d956c51f7ac25e0b2b0411fb01f6f407aa15c9758efeb4242106"
+        let ffprobeSHA = arm64 ? "d986a8ec7b030899fe66a8a288ed809a3543338705a3ce178cfb85869c5d80be"
+                               : "d4da574d6e2e197bd259b47d69cf262df9e312af24ad960444f6d806d3d4c186"
+        return [
+            ToolSpec(name: "yt-dlp",
+                     url: URL(string: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos")!,
+                     sha256: nil,
+                     sumsURL: URL(string: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS")!,
+                     sumsEntry: "yt-dlp_macos", gunzip: false, versionArgs: ["--version"]),
+            ToolSpec(name: "ffmpeg", url: URL(string: "\(ffBase)/ffmpeg-darwin-\(arch).gz")!,
+                     sha256: ffmpegSHA, sumsURL: nil, sumsEntry: nil, gunzip: true, versionArgs: ["-version"]),
+            ToolSpec(name: "ffprobe", url: URL(string: "\(ffBase)/ffprobe-darwin-\(arch).gz")!,
+                     sha256: ffprobeSHA, sumsURL: nil, sumsEntry: nil, gunzip: true, versionArgs: ["-version"]),
+        ]
+    }
+
+    static func missingToolNames() -> [String] {
+        ["yt-dlp", "ffmpeg", "ffprobe"].filter { ToolLocator.find($0) == nil }
+    }
+
+    private static func runs(_ url: URL, _ args: [String]) -> Bool {
+        let p = Process(); p.executableURL = url; p.arguments = args
+        return runProcessBounded(p, timeout: 30).status == 0
+    }
+
+    // Each tool is replaced atomically and only after its hash matches, it
+    // decompresses and it actually runs, so a failure leaves whatever was
+    // installed before exactly as it was.
+    static func installSync(_ specs: [ToolSpec], into dir: URL = ToolInstaller.directory,
+                            progress: (String) -> Void = { _ in }) throws {
+        let fm = FileManager.default
+        do { try fm.createDirectory(at: dir, withIntermediateDirectories: true) }
+        catch { throw ToolInstallError.write(error.localizedDescription) }
+
+        for spec in specs {
+            progress("Descargando \(spec.name)…")
+            let data: Data
+            do { data = try UpdateInstaller.fetch(spec.url, timeout: 900) }
+            catch { throw ToolInstallError.download(spec.name, (error as? UpdateError)?.message ?? error.localizedDescription) }
+
+            let expected: String
+            if let pinned = spec.sha256 { expected = pinned.lowercased() }
+            else if let sumsURL = spec.sumsURL, let entry = spec.sumsEntry,
+                    let text = try? UpdateInstaller.fetch(sumsURL, timeout: 60),
+                    let h = parseSums(String(decoding: text, as: UTF8.self), file: entry) { expected = h }
+            else { throw ToolInstallError.checksumUnavailable(spec.name) }
+            guard sha256Hex(data) == expected else { throw ToolInstallError.badChecksum(spec.name) }
+
+            progress("Preparando \(spec.name)…")
+            let partial = dir.appendingPathComponent(".\(spec.name).partial")
+            let gz = dir.appendingPathComponent(".\(spec.name).gz")
+            try? fm.removeItem(at: partial); try? fm.removeItem(at: gz)
+            defer { try? fm.removeItem(at: partial); try? fm.removeItem(at: gz) }
+            do {
+                if spec.gunzip {
+                    try data.write(to: gz)
+                    fm.createFile(atPath: partial.path, contents: nil)
+                    let out = try FileHandle(forWritingTo: partial)
+                    let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/gunzip")
+                    p.arguments = ["-c", gz.path]; p.standardOutput = out; p.standardError = FileHandle.nullDevice
+                    try p.run(); p.waitUntilExit(); try? out.close()
+                    guard p.terminationStatus == 0 else { throw ToolInstallError.decompress(spec.name) }
+                } else {
+                    try data.write(to: partial)
+                }
+                try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: partial.path)
+            } catch let e as ToolInstallError { throw e }
+            catch { throw ToolInstallError.write(error.localizedDescription) }
+
+            if !runs(partial, spec.versionArgs) {
+                // Apple Silicon refuses unsigned code; signing it ad hoc is enough.
+                let sign = Process(); sign.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+                sign.arguments = ["--force", "-s", "-", partial.path]
+                runProcessBounded(sign, timeout: 30)
+                guard runs(partial, spec.versionArgs) else { throw ToolInstallError.notRunnable(spec.name) }
+            }
+
+            let dest = dir.appendingPathComponent(spec.name)
+            do {
+                if fm.fileExists(atPath: dest.path) { _ = try fm.replaceItemAt(dest, withItemAt: partial) }
+                else { try fm.moveItem(at: partial, to: dest) }
+            } catch { throw ToolInstallError.write(error.localizedDescription) }
+        }
+    }
+
+    // Installs only what's missing. Runs off the main thread; progress and the
+    // result are delivered on main.
+    static func installMissing(progress: @escaping (String) -> Void,
+                               completion: @escaping (Result<Void, ToolInstallError>) -> Void) {
+        let missing = Set(missingToolNames())
+        let todo = specs().filter { missing.contains($0.name) }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result: Result<Void, ToolInstallError>
+            do {
+                try installSync(todo) { msg in DispatchQueue.main.async { progress(msg) } }
+                result = .success(())
+            } catch {
+                result = .failure(error as? ToolInstallError ?? .write(error.localizedDescription))
+            }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+}
+
 // MARK: - Media Downloader
 // Pulls the video or image behind a pasted link (TikTok, Instagram, X, YouTube,
 // Reddit, and ~1800 other sites) into a folder, from where it lands in the Shelf.
@@ -619,6 +802,8 @@ final class MediaDownloader {
     enum Outcome {
         case success(URL)
         case missingTool
+        case missingConversionTools      // yt-dlp is there but ffmpeg/ffprobe aren't
+        case safariCookiesBlocked        // macOS won't let us read Safari's cookies
         case failure(String)
     }
 
@@ -641,16 +826,7 @@ final class MediaDownloader {
         return ["--extractor-args", "tiktok:app_info=7355728856979392262"]
     }
 
-    static func locateTool() -> URL? {
-        let candidates = [
-            "/opt/homebrew/bin/yt-dlp",
-            "/usr/local/bin/yt-dlp",
-            "/opt/local/bin/yt-dlp",
-            NSHomeDirectory() + "/.local/bin/yt-dlp",
-        ]
-        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
-            .map { URL(fileURLWithPath: $0) }
-    }
+    static func locateTool() -> URL? { ToolLocator.find("yt-dlp") }
 
     // yt-dlp handles pages; a link that already points straight at an image file
     // isn't a page it knows how to extract, so those are fetched directly.
@@ -761,7 +937,9 @@ final class MediaDownloader {
         DispatchQueue.global(qos: .userInitiated).async {
             let cookieArgs = cookiesFromBrowser.map { ["--cookies-from-browser", $0] } ?? []
             let siteArgs = extractorArgs(for: url)
-            let arguments = cookieArgs + siteArgs + [
+            // ffmpeg may live in the app's own folder rather than on any PATH.
+            let ffmpegArgs = ToolLocator.find("ffmpeg").map { ["--ffmpeg-location", $0.deletingLastPathComponent().path] } ?? []
+            let arguments = cookieArgs + siteArgs + ffmpegArgs + [
                 "--no-playlist",          // a link inside a playlist means that one video, not all of them
                 "--no-warnings",
                 "--restrict-filenames",   // keeps names shell/Finder-friendly
@@ -800,6 +978,13 @@ final class MediaDownloader {
                     return
                 }
 
+                switch classify(stderr) {
+                case .missingConversionTools:
+                    DispatchQueue.main.async { completion(.missingConversionTools) }; return
+                case .safariCookiesBlocked:
+                    DispatchQueue.main.async { completion(.safariCookiesBlocked) }; return
+                default: break
+                }
                 lastError = friendlyError(from: stderr)
                 guard isTransient(stderr), attempt < transientRetryLimit else {
                     DispatchQueue.main.async { completion(.failure(lastError)) }
@@ -812,22 +997,37 @@ final class MediaDownloader {
         }
     }
 
-    private static func friendlyError(from stderr: String) -> String {
+    enum FailureKind { case missingConversionTools, safariCookiesBlocked, tiktokBlocked, loginRequired, unsupported, unavailable, other }
+
+    // Order matters. The Safari permission error mentions "Cookies.binarycookies",
+    // which used to fall into the generic "prueba activar cookies" branch and tell
+    // someone who had ALREADY enabled cookies to enable them.
+    static func classify(_ stderr: String) -> FailureKind {
         let lower = stderr.lowercased()
-        // TikTok's anti-bot rejection. The raw message tells the user to file a
-        // yt-dlp bug, which is the wrong advice here — it's rate limiting, and
-        // the actual fix is on the cookies setting.
-        if lower.contains("universal data for rehydration") || lower.contains("captcha") {
+        if lower.contains("ffmpeg") && (lower.contains("not found") || lower.contains("ffprobe")) { return .missingConversionTools }
+        if lower.contains("operation not permitted") && lower.contains("cookies.binarycookies") { return .safariCookiesBlocked }
+        if lower.contains("universal data for rehydration") || lower.contains("captcha") { return .tiktokBlocked }
+        if lower.contains("private") || lower.contains("login") || lower.contains("sign in") || lower.contains("cookies") { return .loginRequired }
+        if lower.contains("unsupported url") { return .unsupported }
+        if lower.contains("unavailable") || lower.contains("404") { return .unavailable }
+        return .other
+    }
+
+    static func friendlyError(from stderr: String) -> String {
+        switch classify(stderr) {
+        case .missingConversionTools:
+            return "Faltan las herramientas de conversión (ffmpeg). Pulsa «Instalar herramientas»."
+        case .safariCookiesBlocked:
+            return "macOS no deja leer las cookies de Safari. Dale «Acceso total al disco» a NotchDrop, o elige Chrome en Ajustes."
+        case .tiktokBlocked:
+            // The raw message tells the user to file a yt-dlp bug, which is the wrong
+            // advice — it's rate limiting, and the fix is on the cookies setting.
             return "TikTok bloqueó la petición. Activa las cookies del navegador en Ajustes y reintenta."
-        }
-        if lower.contains("private") || lower.contains("login") || lower.contains("cookies") {
+        case .loginRequired:
             return "Contenido privado o que requiere iniciar sesión — prueba activar cookies en Ajustes."
-        }
-        if lower.contains("unsupported url") {
-            return "Ese sitio no está soportado."
-        }
-        if lower.contains("unavailable") || lower.contains("404") {
-            return "El contenido ya no está disponible."
+        case .unsupported: return "Ese sitio no está soportado."
+        case .unavailable: return "El contenido ya no está disponible."
+        case .other: break
         }
         let firstLine = stderr.split(separator: "\n").first.map(String.init) ?? "Falló la descarga."
         return String(firstLine.prefix(120))
@@ -951,11 +1151,7 @@ enum FileConverter {
         }
     }
 
-    static func ffmpegPath() -> URL? {
-        let candidates = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/local/bin/ffmpeg"]
-        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
-            .map { URL(fileURLWithPath: $0) }
-    }
+    static func ffmpegPath() -> URL? { ToolLocator.find("ffmpeg") }
 
     enum Outcome {
         case success(URL)
@@ -1031,11 +1227,7 @@ enum FileConverter {
         ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int64) ?? 0
     }
 
-    private static func ffprobePath() -> URL? {
-        let candidates = ["/opt/homebrew/bin/ffprobe", "/usr/local/bin/ffprobe", "/opt/local/bin/ffprobe"]
-        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
-            .map { URL(fileURLWithPath: $0) }
-    }
+    private static func ffprobePath() -> URL? { ToolLocator.find("ffprobe") }
 
     /// width, height and frame rate — needed to decide whether a requested bitrate
     /// is even achievable at the current resolution.
@@ -1836,6 +2028,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     var downloadBtn: NSButton!
     var downloadFormatControl: NSSegmentedControl!
     var revealDownloadBtn: NSButton!
+    var downloadActionBtn: NSButton!      // "Instalar herramientas" / "Abrir Acceso total al disco"
+    enum DownloadAction { case installTools, openFullDiskAccess }
+    var pendingDownloadAction: DownloadAction = .installTools
+    var isInstallingTools = false
+    var downloadStatusToActionConstraint: NSLayoutConstraint?
+    var installToolsBtn: NSButton!        // Settings → Descarga de links
     var lastDownloadedFile: URL?
     var downloadStatusLabel: NSTextField!
     var isDownloading = false
@@ -2777,6 +2975,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         revealDownloadBtn.translatesAutoresizingMaskIntoConstraints = false
         trayContainer.addSubview(revealDownloadBtn)
 
+        // Shares the reveal button's spot: that one shows after a success, this one
+        // after a failure the user can fix with a click.
+        downloadActionBtn = NSButton(title: "Instalar herramientas", target: self, action: #selector(downloadActionPressed))
+        downloadActionBtn.bezelStyle = .inline
+        downloadActionBtn.isBordered = false
+        downloadActionBtn.controlSize = .small
+        downloadActionBtn.contentTintColor = NSColor.systemBlue
+        downloadActionBtn.font = .systemFont(ofSize: 10, weight: .semibold)
+        downloadActionBtn.isHidden = true
+        downloadActionBtn.translatesAutoresizingMaskIntoConstraints = false
+        trayContainer.addSubview(downloadActionBtn)
+        // A hidden view's constraints stay live, so this one only applies while the
+        // button is visible; otherwise its width would shrink every status message.
+        downloadStatusToActionConstraint = downloadStatusLabel.trailingAnchor.constraint(
+            lessThanOrEqualTo: downloadActionBtn.leadingAnchor, constant: -8)
+
         fileTrayBox = FileTrayView(); fileTrayBox.wantsLayer = true
         fileTrayBox.layer?.backgroundColor = NSColor(white: 0.1, alpha: 1).cgColor
         fileTrayBox.layer?.cornerRadius = 8
@@ -2843,6 +3057,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             downloadStatusLabel.trailingAnchor.constraint(lessThanOrEqualTo: revealDownloadBtn.leadingAnchor, constant: -8),
             revealDownloadBtn.centerYAnchor.constraint(equalTo: downloadStatusLabel.centerYAnchor),
             revealDownloadBtn.trailingAnchor.constraint(equalTo: trayContainer.trailingAnchor, constant: -6),
+            downloadActionBtn.centerYAnchor.constraint(equalTo: downloadStatusLabel.centerYAnchor),
+            downloadActionBtn.trailingAnchor.constraint(equalTo: trayContainer.trailingAnchor, constant: -6),
 
             fileTrayBox.topAnchor.constraint(equalTo: downloadStatusLabel.bottomAnchor, constant: 6),
             fileTrayBox.bottomAnchor.constraint(equalTo: trayContainer.bottomAnchor, constant: -4),
@@ -2883,6 +3099,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         let format: MediaDownloader.Format = downloadFormatControl.selectedSegment == 1 ? .audioMP3 : .videoMP4
         isDownloading = true
         downloadBtn.isEnabled = false
+        setDownloadActionVisible(false)
         setDownloadStatus(format == .audioMP3 ? "Extrayendo audio…" : "Descargando…", color: C.textSecondary)
 
         MediaDownloader.download(link, format: format, cookiesFromBrowser: cookieBrowserArgument,
@@ -2910,10 +3127,67 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                     }
                     self.updateTrayUI()
                 case .missingTool:
-                    self.setDownloadStatus("Falta yt-dlp — instálalo desde Ajustes.", color: NSColor.systemOrange)
+                    self.offerDownloadAction(.installTools, "Falta yt-dlp, que hace la descarga.")
+                case .missingConversionTools:
+                    self.offerDownloadAction(.installTools, "Faltan las herramientas de conversión (ffmpeg).")
+                case .safariCookiesBlocked:
+                    self.offerDownloadAction(.openFullDiskAccess, "macOS bloquea las cookies de Safari. Dale Acceso total al disco a NotchDrop, o elige Chrome en Ajustes.")
                 case .failure(let message):
                     self.setDownloadStatus(message, color: NSColor.systemRed)
                 }
+            }
+        }
+    }
+
+    func setDownloadActionVisible(_ visible: Bool) {
+        downloadActionBtn?.isHidden = !visible
+        downloadStatusToActionConstraint?.isActive = visible
+    }
+
+    func offerDownloadAction(_ action: DownloadAction, _ message: String) {
+        pendingDownloadAction = action
+        downloadActionBtn.title = action == .installTools ? "Instalar herramientas" : "Abrir Acceso total al disco"
+        downloadActionBtn.isEnabled = !isInstallingTools
+        setDownloadActionVisible(true)
+        revealDownloadBtn.isHidden = true
+        setDownloadStatus(message, color: NSColor.systemOrange)
+    }
+
+    @objc func downloadActionPressed() {
+        switch pendingDownloadAction {
+        case .installTools: installTools()
+        case .openFullDiskAccess:
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!)
+        }
+    }
+
+    // One click: downloads yt-dlp, ffmpeg and ffprobe into the app's own folder.
+    // No Terminal, no Homebrew, no admin password.
+    @objc func installTools() {
+        guard !isInstallingTools else { return }
+        isInstallingTools = true
+        downloadActionBtn?.isEnabled = false
+        installToolsBtn?.isEnabled = false
+        let show: (String, NSColor) -> Void = { [weak self] text, color in
+            self?.setDownloadStatus(text, color: color)
+            self?.downloaderStatusLabel?.stringValue = text
+        }
+        show("Instalando herramientas… (unos 75 MB, puede tardar un minuto)", C.textSecondary)
+        ToolInstaller.installMissing(progress: { text in show(text, C.textSecondary) }) { [weak self] result in
+            guard let self else { return }
+            self.isInstallingTools = false
+            self.downloadActionBtn?.isEnabled = true
+            self.installToolsBtn?.isEnabled = true
+            switch result {
+            case .success:
+                self.setDownloadActionVisible(false)
+                self.setDownloadStatus("✓ Herramientas instaladas. Pulsa Descargar de nuevo.", color: C.spotifyGreen)
+                self.downloaderStatusLabel?.stringValue = self.downloaderStatusText()
+                self.installToolsBtn?.isHidden = ToolInstaller.missingToolNames().isEmpty
+                self.convStatusLabel?.stringValue = ""
+            case .failure(let e):
+                self.setDownloadStatus(e.message, color: NSColor.systemRed)
+                self.downloaderStatusLabel?.stringValue = e.message
             }
         }
     }
@@ -3311,7 +3585,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 self.convStatusLabel.stringValue = "✓ \(out.lastPathComponent)\(sizeText)"
                 self.convStatusLabel.textColor = C.spotifyGreen
             case .missingFFmpeg:
-                self.convStatusLabel.stringValue = "Falta ffmpeg para video/audio: brew install ffmpeg"
+                self.convStatusLabel.stringValue = "Falta ffmpeg para video/audio. Instálalo desde Ajustes → Descarga de links → Instalar herramientas."
                 self.convStatusLabel.textColor = NSColor.systemOrange
             case .failure(let message):
                 self.convStatusLabel.stringValue = message
@@ -3519,9 +3793,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         cookieLbl.translatesAutoresizingMaskIntoConstraints = false
         dcard.addSubview(cookieLbl); dcard.addSubview(cookieBrowserPopup)
 
-        let copyCmdBtn = NSButton(title: "Copiar comando", target: self, action: #selector(copyInstallCommand))
+        // Was "Copiar comando" (brew install yt-dlp): asking people to open Terminal
+        // and install Homebrew first is exactly where they gave up.
+        let copyCmdBtn = NSButton(title: "Instalar herramientas", target: self, action: #selector(installTools))
         copyCmdBtn.bezelStyle = .recessed; copyCmdBtn.controlSize = .small
         copyCmdBtn.translatesAutoresizingMaskIntoConstraints = false
+        copyCmdBtn.isHidden = ToolInstaller.missingToolNames().isEmpty
+        installToolsBtn = copyCmdBtn
         let openFolderBtn = NSButton(title: "Abrir carpeta ↗", target: self, action: #selector(openDownloadsFolder))
         openFolderBtn.bezelStyle = .recessed; openFolderBtn.controlSize = .small
         openFolderBtn.translatesAutoresizingMaskIntoConstraints = false
@@ -3652,7 +3930,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         return "Iniciando…"
     }
 
-    static let ytDlpInstallCommand = "brew install yt-dlp"
     let cookieBrowserDefaultsKey = "NotchDropCookieBrowser"
     var cookieBrowserChoice: String {
         get { UserDefaults.standard.string(forKey: cookieBrowserDefaultsKey) ?? "Sin cookies" }
@@ -3676,17 +3953,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     func downloaderStatusText() -> String {
-        if let tool = MediaDownloader.locateTool() {
-            return "Listo — usando \(tool.path). Las descargas van directo a Descargas."
-        }
-        return "Falta yt-dlp, que es lo que hace la descarga. Instálalo con: \(Self.ytDlpInstallCommand)"
-    }
-
-    @objc func copyInstallCommand() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(Self.ytDlpInstallCommand, forType: .string)
-        lastPBCount = NSPasteboard.general.changeCount
-        downloaderStatusLabel?.stringValue = "Comando copiado — pégalo en Terminal."
+        let missing = ToolInstaller.missingToolNames()
+        if missing.isEmpty { return "Listo. Las descargas van directo a Descargas." }
+        return "Faltan herramientas (\(missing.joined(separator: ", "))). Pulsa «Instalar herramientas»: se descargan solas, sin Terminal."
     }
 
     @objc func openDownloadsFolder() {
@@ -3942,6 +4211,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         settingsContainer.isHidden = true
         selectedTabButton = sender
         fitTabBar()
+
+        // Without yt-dlp/ffmpeg the downloader can only fail. Say so up front and
+        // offer the one-click install, instead of making people fail first.
+        if sender.tag == 1, !isDownloading, !isInstallingTools, downloadStatusLabel?.stringValue.isEmpty == true,
+           !ToolInstaller.missingToolNames().isEmpty {
+            offerDownloadAction(.installTools, "Para descargar videos faltan unas herramientas gratuitas (yt-dlp y ffmpeg).")
+        }
 
         // Opening the Shelf right after copying a link is the whole workflow, so
         // offer the clipboard contents instead of making the user paste manually.

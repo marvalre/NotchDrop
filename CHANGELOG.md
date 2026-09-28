@@ -15,6 +15,22 @@ git reset --hard v3.9.1
 
 ---
 
+## v3.13.2 — Descargas: las herramientas se instalan con un clic
+
+**Agregado**
+- **Botón "Instalar herramientas"** (Shelf y Ajustes → Descarga de links). Antes había que abrir la Terminal, instalar Homebrew y correr `brew install yt-dlp ffmpeg`, y ahí se atoraba la gente. Ahora la app descarga yt-dlp, ffmpeg y ffprobe sola (unos 75 MB, ~20 s en fibra), sin Homebrew ni contraseña, a `~/Library/Application Support/NotchDrop/bin`. Cada archivo se verifica con SHA-256 antes de ejecutarse y, si algo falla, lo que ya estuviera instalado queda intacto. Si el Mac ya tiene las herramientas de Homebrew, se usan esas.
+- Al abrir **Shelf**, si faltan, el botón aparece de entrada con una explicación en vez de esperar a que la descarga falle.
+
+**Arreglado**
+- **"ERROR: Postprocessing: ffprobe and ffmpeg not found"** al bajar MP3 (o al unir video y audio): la app no le decía a yt-dlp dónde estaba ffmpeg. Ahora se lo indica siempre (`--ffmpeg-location`), y el error en inglés se sustituye por un mensaje claro con el botón para instalar.
+- **Safari: "Contenido privado… prueba activar cookies" aunque ya estuvieran activadas.** El error real era que macOS bloquea las cookies de Safari sin *Acceso total al disco*, y la app lo confundía por contener la palabra "cookies". Ahora lo explica y ofrece abrir esa pantalla de Configuración del Sistema.
+
+**Verificación**
+- Prueba real con las URLs y hashes reales: instalación completa en 18 s; con las herramientas de la app, la extracción de MP3 funciona, y sin `--ffmpeg-location` reproduce exactamente el error de la captura.
+- Prueba de punta a punta con un servidor local: hash alterado, binario que no corre y actualización mala se rechazan sin dejar archivos ni romper lo instalado.
+
+---
+
 ## v3.13.1 — Convertir PDF a imagen ya no se come toda la memoria
 
 **Arreglado**

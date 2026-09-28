@@ -5296,8 +5296,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 // ═══════════════════════════════════════════════════════════════════════════
 // MARK: - Entry
 // ═══════════════════════════════════════════════════════════════════════════
-let app = NSApplication.shared
-app.setActivationPolicy(.accessory)
-let delegate = AppDelegate()
-app.delegate = delegate
-app.run()
+// Compiled out for the test runner (tests/run.sh), which links this file as a
+// library next to tests/main.swift. An @main entry point rather than top-level
+// statements because Swift rejects top-level code in a non-main file even inside
+// an inactive #if.
+#if !NOTCHDROP_TESTS
+@main
+enum NotchDropMain {
+    static func main() {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        // NSApplication.delegate is weak; this keeps the delegate alive for the
+        // whole run loop instead of relying on the optimizer not releasing it.
+        withExtendedLifetime(delegate) { app.run() }
+    }
+}
+#endif

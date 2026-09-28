@@ -34,7 +34,7 @@ swiftc \
   -framework ServiceManagement \
   -framework Carbon \
   -framework PDFKit \
-  -O NotchDrop.swift -o "$CONTENTS/MacOS/NotchDrop"
+  -parse-as-library -O NotchDrop.swift -o "$CONTENTS/MacOS/NotchDrop"
 chmod +x "$CONTENTS/MacOS/NotchDrop"
 
 echo "==> Signing (ad-hoc)"

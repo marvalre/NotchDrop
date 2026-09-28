@@ -1798,17 +1798,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         b.translatesAutoresizingMaskIntoConstraints = false
         return b
     }
-    // Degrades in steps rather than letting the row overflow: full labels, then
-    // icon-only for every tab except the selected one, then icon-only
-    // everywhere. Measured at runtime, so it adapts to whatever font metrics
-    // and text size the Mac actually renders with instead of assuming ours.
+    // Keeps every tab's name visible and only gives up on that as a last resort.
+    // Steps, cheapest first: tighter spacing between tabs (10 → 8 → 6 → 4pt),
+    // then icon-only for the unselected tabs, then icon-only everywhere.
+    // Measured at runtime so it adapts to the text metrics this Mac renders with.
+    // (An earlier version skipped straight to icon-only and hid the names on the
+    // Mac where they had always fit.)
     func fitTabBar() {
         guard let tabsStack, let settingsBtn else { return }
-        let available = contentWidth - settingsBtn.fittingSize.width - 12
+        // Same right edge as the trailing constraint to the gear (8pt gap).
+        let available = contentWidth - settingsBtn.fittingSize.width - 8
         for b in allTabButtons { b.toolTip = b.title }
         func fits() -> Bool { tabsStack.fittingSize.width <= available }
         allTabButtons.forEach { $0.imagePosition = .imageLeading }
-        if fits() { return }
+        for spacing in [CGFloat(10), 8, 6, 4] {
+            tabsStack.spacing = spacing
+            if fits() { return }
+        }
+        tabsStack.spacing = 10
         for b in allTabButtons { b.imagePosition = (b === selectedTabButton) ? .imageLeading : .imageOnly }
         if fits() { return }
         allTabButtons.forEach { $0.imagePosition = .imageOnly }

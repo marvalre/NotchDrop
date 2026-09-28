@@ -72,7 +72,7 @@ Convertir imágenes y PDF **no necesita nada de esto** — funciona directo.
 
 ## ¿Problemas?
 
-- **"NotchDrop no se puede abrir porque no se puede verificar"** → repite el paso 3 (clic derecho → Abrir).
+- **"NotchDrop no se puede abrir porque no se puede verificar"** → repite el paso 3: **Configuración del Sistema → Privacidad y Seguridad → Abrir de todos modos**. (El viejo truco de clic derecho → Abrir ya no funciona en macOS 15 o más nuevo.)
 - **No aparece nada en pantalla** → revisa que esté corriendo en Monitor de Actividad buscando "NotchDrop"; si no, ábrela de nuevo desde Aplicaciones.
 - **Los links no descargan** → probablemente falta `yt-dlp` (paso 5).
 

@@ -657,6 +657,16 @@ enum ToolInstaller {
             .appendingPathComponent("NotchDrop/bin")
     }
 
+    /// Quitting mid-install left `.<tool>.partial` / `.<tool>.gz` (tens of MB) behind
+    /// until that same tool was installed again. Only those hidden work files are removed.
+    static func removeLeftovers(in dir: URL = directory) {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
+        for n in names where n.hasPrefix(".") && (n.hasSuffix(".partial") || n.hasSuffix(".gz")) {
+            try? fm.removeItem(at: dir.appendingPathComponent(n))
+        }
+    }
+
     static func sha256Hex(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
@@ -3127,6 +3137,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // ran after a drop or a clear so a fresh launch showed no hint at all.
         restoreShelf()
         updateTrayUI()
+        DispatchQueue.global(qos: .utility).async { ToolInstaller.removeLeftovers() }
     }
 
     @objc func startDownload() {
@@ -4648,7 +4659,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                     netflixTrack.album = "Now Playing"
                     netflixTrack.isPlaying = true
                     netflixTrack.isActive = true
-                    netflixTrack.artworkData = NSWorkspace.shared.icon(forFile: "/Applications/Google Chrome.app").tiffRepresentation
+                    netflixTrack.artworkData = AppIconBadge.chrome
                     self.usingNetflixFallback = true
                     self.track = netflixTrack
                     self.updateUI()
@@ -4725,7 +4736,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             }
             
             // Update artwork if changed
-            let newHash = track.artworkData?.hashValue ?? 0
+            let newHash = track.artworkData.map(ArtworkFingerprint.of) ?? 0
             if newHash != lastArtworkHash, let data = track.artworkData, let img = NSImage(data: data) {
                 lastArtworkHash = newHash
                 cachedArtImage = img
@@ -4910,15 +4921,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // stop forever until the app was relaunched. This bounds the wait explicitly.
     func downloadWithTimeout(_ url: URL, timeout: TimeInterval = 5) -> Data? {
         var result: Data?
+        let lock = NSLock()
         let semaphore = DispatchSemaphore(value: 0)
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
         let task = URLSession.shared.dataTask(with: request) { data, _, _ in
-            result = data
+            lock.lock(); result = data; lock.unlock()
             semaphore.signal()
         }
         task.resume()
-        _ = semaphore.wait(timeout: .now() + timeout + 1)
+        if semaphore.wait(timeout: .now() + timeout + 1) == .timedOut { task.cancel() }
+        lock.lock(); defer { lock.unlock() }
         return result
     }
 
@@ -4926,6 +4939,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // MARK: - Mirror Camera
     // ═══════════════════════════════════════════════════════════════════
 
+    let cameraQueue = DispatchQueue(label: "com.marcelo.notchdrop.camera")
     @objc func toggleMirrorCamera() { if mirrorActive { stopMirrorCamera() } else { startMirrorCamera() } }
     func startMirrorCamera() {
         let s = AVCaptureSession(); s.sessionPreset = .medium
@@ -4934,11 +4948,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         if let c = p.connection, c.isVideoMirroringSupported { c.automaticallyAdjustsVideoMirroring = false; c.isVideoMirrored = true }
         mirrorCamLayerContainer.wantsLayer = true; p.frame = NSRect(x: 0, y: 0, width: 110, height: 110); p.cornerRadius = 55
         mirrorCamLayerContainer.layer?.addSublayer(p)
-        DispatchQueue.global().async { s.startRunning() }
+        cameraQueue.async { s.startRunning() }
         captureSession = s; previewLayer = p; mirrorActive = true; mirrorIconView.isHidden = true
     }
     func stopMirrorCamera() {
-        captureSession?.stopRunning(); previewLayer?.removeFromSuperlayer()
+        // Same serial queue as startRunning(): with the two on different queues a quick
+        // open-then-close could stop the session before it started, leaving the camera on.
+        if let s = captureSession { cameraQueue.async { s.stopRunning() } }
+        previewLayer?.removeFromSuperlayer()
         captureSession = nil; previewLayer = nil; mirrorActive = false; mirrorIconView.isHidden = false
     }
 
@@ -5195,6 +5212,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // Text wins when both are present: copying from a rich editor puts both on
         // the pasteboard, and the text is almost always what was meant.
         if let s = pb.string(forType: .string), !s.isEmpty {
+            // Text has no cap of its own otherwise: a 20 MB log copied once froze every
+            // later clipboard change for ~0.8 s and sat in memory and in UserDefaults.
+            guard ClipboardTextPolicy.shouldCapture(s) else { return }
             item = ClipItem(text: s)
         } else if let type = ClipItem.preferredImageType(on: pb), let data = pb.data(forType: type) {
             guard data.count <= Self.maxClipboardImageBytes else { return }
@@ -5304,7 +5324,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             let leading: NSView
             switch c.kind {
             case .text(let s):
-                let t = lbl(s, 10, .regular, C.textSecondary)
+                let t = lbl(ClipboardTextPolicy.preview(s), 10, .regular, C.textSecondary)
                 t.maximumNumberOfLines = 1
                 t.cell?.wraps = false
                 t.cell?.isScrollable = false
@@ -5935,6 +5955,41 @@ enum NotesFormatter {
 // ═══════════════════════════════════════════════════════════════════════════
 // MARK: - Entry
 // ═══════════════════════════════════════════════════════════════════════════
+/// The Chrome icon as a small PNG, made once. `icon(forFile:).tiffRepresentation` is a
+/// 32-representation, ~74 MB TIFF, and the Netflix fallback rebuilt it every 3 s;
+/// measured, that pushed the app's footprint towards 5 GB within minutes.
+enum AppIconBadge {
+    static func pngData(forFile path: String, side: Int = 128) -> Data? {
+        let icon = NSWorkspace.shared.icon(forFile: path)
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: side, pixelsHigh: side,
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let ctx = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = ctx
+        icon.draw(in: NSRect(x: 0, y: 0, width: side, height: side), from: .zero, operation: .copy, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .png, properties: [:])
+    }
+    static let chrome: Data? = pngData(forFile: "/Applications/Google Chrome.app")
+}
+
+/// `Data.hashValue` only looks at the length and the first bytes, so two covers of the
+/// same size with the same header collided and the old artwork stayed on screen.
+enum ArtworkFingerprint {
+    static func of(_ data: Data) -> Int {
+        let digest = SHA256.hash(data: data)
+        return digest.prefix(8).reduce(0) { ($0 << 8) | Int($1) } | 1   // never 0, which means "no artwork"
+    }
+}
+
+enum ClipboardTextPolicy {
+    static let maxCapturedBytes = 1 * 1024 * 1024
+    static let previewCharacters = 300
+    static func shouldCapture(_ text: String) -> Bool { text.utf8.count <= maxCapturedBytes }
+    static func preview(_ text: String) -> String { String(text.prefix(previewCharacters)) }
+}
+
 enum PlaybackTime {
     /// `Int(_:)` traps on infinity and on anything past Int.max. Media sources do report
     /// both (live streams, corrupt metadata), so the value is checked and capped at 99h.
@@ -6169,12 +6224,22 @@ enum UpdateFeed {
 }
 
 enum UpdateInstaller {
-    static func fetch(_ url: URL, timeout: TimeInterval = 120) throws -> Data {
-        guard UpdateFeed.isAllowed(url) else { throw UpdateError.network("URL no permitida") }
+    /// `timeout` only fires when the connection goes idle; a server that keeps trickling
+    /// bytes never trips it, and with the shared session's 7-day resource limit the
+    /// install/update buttons could stay disabled for hours. `totalTimeout` bounds the
+    /// whole transfer, and `allowsAnyHost` exists only so tests can use a local server.
+    static func fetch(_ url: URL, timeout: TimeInterval = 120, totalTimeout: TimeInterval = 900,
+                      allowsAnyHost: Bool = false) throws -> Data {
+        guard allowsAnyHost || UpdateFeed.isAllowed(url) else { throw UpdateError.network("URL no permitida") }
         var req = URLRequest(url: url); req.timeoutInterval = timeout
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = timeout
+        config.timeoutIntervalForResource = totalTimeout
+        let session = URLSession(configuration: config)
+        defer { session.finishTasksAndInvalidate() }
         let sem = DispatchSemaphore(value: 0)
         var result: Result<Data, UpdateError> = .failure(.network("sin respuesta"))
-        URLSession.shared.dataTask(with: req) { d, r, e in
+        session.dataTask(with: req) { d, r, e in
             if let e { result = .failure(.network(e.localizedDescription)) }
             else if let h = r as? HTTPURLResponse, !(200..<300).contains(h.statusCode) { result = .failure(.http(h.statusCode)) }
             else { result = .success(d ?? Data()) }

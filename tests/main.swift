@@ -412,5 +412,57 @@ check(PlaybackTime.clock(.infinity) == "0:00", "duración infinita (stream en vi
 check(PlaybackTime.clock(-.infinity) == "0:00" && PlaybackTime.clock(.nan) == "0:00" && PlaybackTime.clock(-3) == "0:00", "NaN y negativos → 0:00")
 check(PlaybackTime.clock(1e300) == "5999:59", "valor gigante se limita en vez de crashear")
 
+print("AppIconBadge / ArtworkFingerprint / ClipboardTextPolicy")
+if let png = AppIconBadge.pngData(forFile: "/System/Applications/Calculator.app") {
+    check(png.count < 200_000, "icono como PNG de 128 px pesa \(png.count) bytes (el TIFF anterior: 73 949 448)")
+    check(NSImage(data: png) != nil && png.starts(with: [0x89, 0x50, 0x4E, 0x47]), "es un PNG válido")
+} else { check(false, "no se pudo generar el icono") }
+let artA = Data(repeating: 1, count: 100_000)
+var artB = artA; artB[90_000] = 9   // difiere solo mucho después de la cabecera
+check(artA.hashValue == artB.hashValue, "premisa: hashValue confunde dos portadas del mismo tamaño y cabecera")
+check(ArtworkFingerprint.of(artA) != ArtworkFingerprint.of(artB), "la huella nueva sí las distingue")
+check(ArtworkFingerprint.of(artA) == ArtworkFingerprint.of(artA) && ArtworkFingerprint.of(Data()) != 0, "estable y nunca 0")
+check(ClipboardTextPolicy.shouldCapture("hola") && !ClipboardTextPolicy.shouldCapture(String(repeating: "a", count: 2_000_000)), "texto de 2 MB no se guarda en el historial")
+check(ClipboardTextPolicy.preview(String(repeating: "x", count: 5000)).count == 300, "la fila solo dibuja 300 caracteres")
+
+print("UpdateInstaller.fetch: plazo total")
+do {
+    let port = Int.random(in: 20000..<40000)
+    let py = Process()
+    py.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+    py.arguments = ["-c", """
+    import http.server, time
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200); self.send_header('Content-Length','100000'); self.end_headers()
+            try:
+                for _ in range(100000):
+                    self.wfile.write(b'x'); self.wfile.flush(); time.sleep(0.2)
+            except Exception: pass
+        def log_message(self, *a): pass
+    http.server.ThreadingHTTPServer(('127.0.0.1', \(port)), H).serve_forever()
+    """]
+    try py.run()
+    defer { py.terminate() }
+    Thread.sleep(forTimeInterval: 1.0)
+    let start = Date()
+    var failed = false
+    do { _ = try UpdateInstaller.fetch(URL(string: "http://127.0.0.1:\(port)/")!, timeout: 5, totalTimeout: 2, allowsAnyHost: true) }
+    catch { failed = true }
+    let took = Date().timeIntervalSince(start)
+    check(failed && took < 6, "servidor que gotea bytes: corta por plazo total (\(String(format: "%.1f", took)) s; antes esperaba sin límite)")
+}
+
+print("ToolInstaller.removeLeftovers")
+do {
+    let d = FileManager.default.temporaryDirectory.appendingPathComponent("nd-left-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+    for n in [".ffmpeg.partial", ".ffmpeg.gz", "yt-dlp", "ffmpeg", ".keep"] { FileManager.default.createFile(atPath: d.appendingPathComponent(n).path, contents: Data([1])) }
+    ToolInstaller.removeLeftovers(in: d)
+    let left = Set((try? FileManager.default.contentsOfDirectory(atPath: d.path)) ?? [])
+    check(left == ["yt-dlp", "ffmpeg", ".keep"], "borra solo los .partial/.gz ocultos; deja las herramientas instaladas")
+    try? FileManager.default.removeItem(at: d)
+}
+
 print("\nRESULTADO: \(passed) pass / \(failed) fail")
 exit(failed == 0 ? 0 : 1)

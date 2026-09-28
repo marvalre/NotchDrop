@@ -15,6 +15,22 @@ git reset --hard v3.9.1
 
 ---
 
+## v3.13.5 — Memoria: Netflix en Chrome, portapapeles y descargas
+
+**Arreglado**
+- **Netflix en Chrome llenaba la memoria.** Mientras la app detectaba Netflix, cada 3 segundos convertía el icono de Chrome a un TIFF de **74 MB** que no se liberaba: medido, el consumo subía a ~4.8 GB en pocos minutos. Ahora el icono es un PNG de 128 px que se genera una sola vez (unos KB).
+- **Portadas distintas con el mismo tamaño** dejaban la anterior en pantalla (la comparación solo miraba el tamaño y los primeros bytes). Ahora se compara con una huella SHA-256.
+- **Portapapeles:** un texto enorme (p. ej. un log de 20 MB) congelaba la app ~0.8 s en cada copia posterior y se guardaba completo. Ahora no se guarda texto de más de 1 MB en el historial (lo que copiaste sigue funcionando normal en el portapapeles del sistema) y cada fila dibuja solo los primeros 300 caracteres.
+- **Descargas de herramientas/actualizaciones sin plazo total.** Un servidor lento que iba goteando bytes podía dejar los botones "Instalar"/"Actualizar" bloqueados por horas. Ahora hay un tope de 15 minutos por descarga.
+- **Cámara espejo:** abrir y cerrar rápido podía dejar la cámara encendida (inicio y paro corrían en colas distintas).
+- **Descarga de carátulas de Spotify:** al vencer el plazo ahora se cancela la descarga en vez de dejarla corriendo.
+- **Restos de instalación:** si cerrabas la app a media instalación de herramientas quedaban archivos ocultos de decenas de MB; se limpian al abrir.
+
+**Verificación**
+- 250 comprobaciones automáticas. Cada arreglo tiene prueba (incluida una con un servidor local que gotea bytes).
+
+---
+
 ## v3.13.4 — Correcciones del escaneo: imágenes, notas, alarmas y un crash
 
 **Arreglado**

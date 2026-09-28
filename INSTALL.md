@@ -75,3 +75,9 @@ Convertir imágenes y PDF **no necesita nada de esto** — funciona directo.
 - **"NotchDrop no se puede abrir porque no se puede verificar"** → repite el paso 3 (clic derecho → Abrir).
 - **No aparece nada en pantalla** → revisa que esté corriendo en Monitor de Actividad buscando "NotchDrop"; si no, ábrela de nuevo desde Aplicaciones.
 - **Los links no descargan** → probablemente falta `yt-dlp` (paso 5).
+
+## Actualizar
+
+A partir de la versión 3.13.0 la app **se actualiza sola, con un clic**: cuando hay una versión nueva llega una notificación y en **Ajustes → Actualizaciones** aparece el botón **Actualizar**. No hay que descargar nada ni volver a autorizar la app.
+
+Si tienes una versión anterior a la 3.13.0, instala esa versión a mano una última vez (pasos de arriba); de ahí en adelante se actualiza sola.

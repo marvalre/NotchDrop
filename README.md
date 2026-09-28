@@ -74,6 +74,12 @@ Descarga el `.app` y muévelo a `/Applications`. La primera vez macOS lo bloquea
 
 ---
 
+## Actualizaciones
+
+Desde la 3.13.0 NotchDrop busca versiones nuevas una vez al día en GitHub (se puede apagar en Ajustes). Si encuentra una, avisa y espera a que pulses **Actualizar**; nunca instala solo.
+
+Cada versión se publica con una firma Ed25519 (`NotchDrop-X.zip.sig`) y la app la verifica contra la llave pública incluida en su código antes de tocar nada. Además valida que el paquete sea el de NotchDrop y la versión publicada, reemplaza la app de forma atómica y manda la anterior a la Papelera. Detalles de diseño en `docs/superpowers/specs/2026-09-28-auto-update-design.md`; cómo publicar una versión en `RELEASING.md`.
+
 ## Requisitos
 
 - **macOS 13.0+** (Ventura). El waveform en vivo requiere 14.2+.

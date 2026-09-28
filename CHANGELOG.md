@@ -15,6 +15,28 @@ git reset --hard v3.9.1
 
 ---
 
+## v3.13.0 — La app se actualiza sola (con un clic) y una tanda de arreglos
+
+**Agregado**
+- **Actualizaciones dentro de la app.** Ajustes → *Actualizaciones*. Una vez al día busca en GitHub; si hay versión nueva llega una notificación y aparece el botón **Actualizar**. Nunca instala nada sin que lo pulses. La descarga la hace la app misma, así que macOS no vuelve a pedir "Abrir de todos modos".
+- **Firmadas.** Cada versión lleva un sello digital (Ed25519) y la app rechaza cualquier descarga que no coincida con la llave pública que trae dentro, aunque viniera de GitHub. Además comprueba que el paquete sea de NotchDrop, que su versión sea la publicada y que pase `codesign`.
+- **Instalación segura.** El reemplazo es atómico: si algo falla, tu app queda exactamente como estaba. La versión anterior va a la Papelera, no se borra.
+- Quien tenga una versión anterior a esta necesita instalarla **a mano una última vez**; de ahí en adelante se actualiza sola.
+
+**Arreglado**
+- **Currency: "1,000" se leía como 1.** Ahora la coma se interpreta número por número: decimal en `1,5`, miles en `1,000` / `12,345` / `1,000,000`, y con ambos separadores el último es el decimal (`1,000.50`, `1.000,50`). Sumas como `1,5+1,5` siguen dando 3 y `1,000+2,5` da 1002.5.
+- **⌥⌘N: el panel abierto con el atajo se cerraba solo** al cabo de ~1 segundo. Medido en esta Mac: abierto 0.8 s y luego cerrado. Ahora se queda abierto hasta que el mouse haya entrado al panel una vez (o lo cierres con el atajo o un clic fuera).
+- **Comprimir audio y video fallaba** para MP3, FLAC, AIFF, Opus y WebM, y para WAV "terminaba bien" con un archivo que nada puede reproducir. Ahora el códec se elige según el contenedor (MP3 → MP3, Opus → Opus) y los formatos que no pueden comprimirse bajando bitrate salen como `.m4a` / `.mp4`. Un intento fallido ya no deja un archivo vacío junto al original.
+- **Cronómetro perdía tiempo**: contaba disparos de un timer y se atrasaba al hacer scroll o abrir un menú (4.5 s reales mostraban 1.6 s). Ahora usa el reloj real.
+- **Now Playing se podía congelar tras horas de uso** (el puente escribía a un canal que nadie leía) y **dejaba procesos huérfanos** al cerrar o reiniciar la app: en esta Mac había 8, uno de más de 9 horas. Ahora se detiene al salir (también con `kill`), limpia los que hayan quedado de antes y se reinicia solo si se cae.
+- Las pestañas conservan su nombre completo: primero se aprieta el espacio entre ellas y solo se dejan como ícono cuando de verdad no caben (3.12.2).
+
+**Verificación**
+- Las pruebas ahora compilan el `NotchDrop.swift` real (antes copiaban fragmentos): 156 comprobaciones, incluidas conversiones con ffmpeg real de MP3, M4A, WAV, FLAC, AIFF, Opus, MP4, MKV y WebM.
+- Prueba de punta a punta del instalador contra un servidor local: instala una app válida; con un zip alterado, con un zip firmado de otra versión o sin permiso de escritura, rechaza y deja la app instalada byte por byte igual.
+
+---
+
 ## v3.12.1 — La barra de pestañas ya no se sale del panel
 
 **Arreglado**

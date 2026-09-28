@@ -483,6 +483,7 @@ func runProcessBounded(_ process: Process, timeout: TimeInterval) -> (status: In
 
 final class MediaRemoteBridge {
     private var listener: Process?
+    var isRunning: Bool { listener != nil }
     private var outputBuffer = Data()
     private let bufferQueue = DispatchQueue(label: "com.marcelo.notchdrop.media-bridge")
     var onPayload: ((String, [String: Any]) -> Void)?
@@ -497,18 +498,49 @@ final class MediaRemoteBridge {
         Bundle.main.resourceURL?.appendingPathComponent("MediaRemoteAdapter/libMediaRemoteAdapter.dylib")
     }
 
+    // The bridge's perl listener is a child of the app, but nothing stopped it
+    // when the app quit or was killed, so every quit, relaunch and update left
+    // another copy running (found: six orphans, one 9+ hours old, all still
+    // polling MediaRemote). Orphans are perl processes running this adapter in
+    // "loop" mode whose parent is launchd (pid 1).
+    static func orphanPIDs(inPSOutput output: String) -> [Int32] {
+        output.split(separator: "\n").compactMap { line -> Int32? in
+            let parts = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            guard parts.count == 3, let pid = Int32(parts[0]), let ppid = Int32(parts[1]), ppid == 1 else { return nil }
+            let command = String(parts[2])
+            guard command.contains("/MediaRemoteAdapter/"), command.hasSuffix(" loop") else { return nil }
+            return pid
+        }
+    }
+
+    static func reapOrphans() {
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-axo", "pid=,ppid=,command="]
+        for pid in orphanPIDs(inPSOutput: runProcessBounded(ps, timeout: 5).out) { kill(pid, SIGTERM) }
+    }
+
+    // stderr goes to /dev/null, never to a Pipe nobody reads: the perl adapter
+    // and its dylib do write there (warnings, "Failed to serialize data"), and
+    // once ~64KB piled up in an unread pipe perl blocked in write() — still
+    // alive, so onTerminated never fired, with Now Playing frozen on an old track.
+    static func silenceDiagnostics(_ process: Process) {
+        process.standardError = FileHandle.nullDevice
+    }
+
     @discardableResult
     func start() -> Bool {
         guard listener == nil, let scriptURL, let libraryURL,
               FileManager.default.fileExists(atPath: scriptURL.path),
               FileManager.default.fileExists(atPath: libraryURL.path) else { return false }
 
+        Self.reapOrphans()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
         process.arguments = [scriptURL.path, libraryURL.path, "loop"]
         let output = Pipe()
         process.standardOutput = output
-        process.standardError = Pipe()
+        Self.silenceDiagnostics(process)
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty else { return }
@@ -566,10 +598,9 @@ final class MediaRemoteBridge {
             var args = [scriptURL.path, libraryURL.path, command]
             if let argument { args.append(argument) }
             process.arguments = args
-            process.standardOutput = Pipe()
-            process.standardError = Pipe()
-            try? process.run()
-            process.waitUntilExit()
+            // Bounded and drained: an unread pipe plus waitUntilExit leaked a
+            // thread and a perl process per click whenever MediaRemote hung.
+            runProcessBounded(process, timeout: 5)
         }
     }
 }
@@ -1738,6 +1769,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     var notchDiagnosticLabel: NSTextField!
     var downloaderStatusLabel: NSTextField!
     var cookieBrowserPopup: NSPopUpButton!
+    var signalSources: [DispatchSourceSignal] = []
+    var bridgeFailures = 0
+    var bridgeStartedAt = Date()
     var openedByKeyboard = false
     var pointerEnteredSinceKeyboardOpen = false
     var updateStatusLabel: NSTextField!
@@ -1952,8 +1986,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         applyCollapsedBoxAppearance()
     }
 
+    // Runs on any normal quit, including NSApp.terminate from the updater's relaunch.
+    func applicationWillTerminate(_ notification: Notification) {
+        mediaBridge.stop()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         scheduleUpdateChecks()
+        // pkill / kill send SIGTERM, whose default action ends the process without
+        // running applicationWillTerminate. Routing it through terminate() lets
+        // the bridge (and anything else that cleans up on quit) actually stop.
+        for sig in [SIGTERM, SIGINT, SIGHUP] {
+            signal(sig, SIG_IGN)
+            let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            src.setEventHandler { NSApp.terminate(nil) }
+            src.resume()
+            signalSources.append(src)
+        }
         targetScreen = pickTargetScreen()
         NotificationCenter.default.addObserver(self, selector: #selector(handleScreenParametersChanged),
                                                 name: NSApplication.didChangeScreenParametersNotification, object: nil)
@@ -2072,12 +2121,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // nothing on screen explaining why.
         mediaBridge.onTerminated = { [weak self] in
             guard let self, self.usesMediaBridge else { return }
-            NSLog("NotchDrop: media bridge terminated — falling back to direct MediaRemote")
-            self.usesMediaBridge = false
-            loadMediaRemote()
-            mrRegisterNotifs?(DispatchQueue.main)
+            // A bridge that ran for a while before dying isn't a crash loop.
+            if Date().timeIntervalSince(self.bridgeStartedAt) > 120 { self.bridgeFailures = 0 }
+            self.bridgeFailures += 1
+            if let delay = BridgeRestartPolicy.delay(afterFailures: self.bridgeFailures) {
+                NSLog("NotchDrop: media bridge exited — restarting in \(Int(delay))s (attempt \(self.bridgeFailures))")
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self, self.usesMediaBridge, !self.mediaBridge.isRunning else { return }
+                    if self.mediaBridge.start() { self.bridgeStartedAt = Date() } else { self.fallBackToDirectMediaRemote() }
+                }
+                return
+            }
+            self.fallBackToDirectMediaRemote()
         }
         usesMediaBridge = mediaBridge.start()
+        bridgeStartedAt = Date()
         if !usesMediaBridge {
             loadMediaRemote()
             mrRegisterNotifs?(DispatchQueue.main)
@@ -3707,6 +3765,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         content.title = "NotchDrop \(version) disponible"
         content.body = "Abre Ajustes en el notch y pulsa Actualizar."
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: updateNotificationID, content: content, trigger: nil))
+    }
+
+    func fallBackToDirectMediaRemote() {
+        NSLog("NotchDrop: media bridge unavailable — falling back to direct MediaRemote")
+        usesMediaBridge = false
+        loadMediaRemote()
+        mrRegisterNotifs?(DispatchQueue.main)
     }
 
     @objc func quitApp() {
@@ -5536,6 +5601,16 @@ struct StopwatchClock {
     static func format(_ t: TimeInterval) -> String {
         let tenths = max(0, Int(t * 10))
         return String(format: "%02d:%02d.%d", tenths / 600, (tenths / 10) % 60, tenths % 10)
+    }
+}
+
+// How long to wait before restarting the Now Playing bridge after it exits, and
+// when to stop trying. On macOS 15.4+ the direct MediaRemote fallback is
+// rejected for third-party apps, so giving up after one exit meant Now Playing
+// was gone until the app was relaunched.
+enum BridgeRestartPolicy {
+    static func delay(afterFailures n: Int) -> TimeInterval? {
+        switch n { case 1: return 2; case 2: return 10; case 3: return 60; default: return nil }
     }
 }
 

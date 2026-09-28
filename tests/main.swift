@@ -206,5 +206,42 @@ check(StopwatchClock.format(61.5) == "01:01.5", "formato 61.5")
 check(StopwatchClock.format(3599.99) == "59:59.9", "formato 59:59.9")
 check(StopwatchClock.format(0.09) == "00:00.0", "décimas truncan, no redondean")
 
+print("BridgeRestartPolicy")
+check(BridgeRestartPolicy.delay(afterFailures: 1) == 2, "1er fallo: reintenta en 2 s")
+check(BridgeRestartPolicy.delay(afterFailures: 2) == 10, "2do fallo: reintenta en 10 s")
+check(BridgeRestartPolicy.delay(afterFailures: 3) == 60, "3er fallo: reintenta en 60 s")
+check(BridgeRestartPolicy.delay(afterFailures: 4) == nil, "4to fallo seguido: se rinde")
+check(BridgeRestartPolicy.delay(afterFailures: 0) == nil, "0 fallos no pide reintento")
+
+print("\nBridge: stderr sin leer")
+// A child that writes far more than a pipe buffer to stderr must not be able to
+// stall the bridge: with stderr on an unread Pipe it blocks at ~64KB, alive but mute.
+do {
+    let perl = Process(); perl.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+    perl.arguments = ["-e", "$|=1; for my $i (1..400) { print STDERR ('e' x 1024) . qq(\\n); print qq(line $i\\n); }"]
+    let out = Pipe(); perl.standardOutput = out
+    MediaRemoteBridge.silenceDiagnostics(perl)
+    try! perl.run()
+    let data = out.fileHandleForReading.readDataToEndOfFile(); perl.waitUntilExit()
+    check(String(decoding: data, as: UTF8.self).split(separator: "\n").count == 400, "el hijo emite 400 líneas aunque escriba 400 KB a stderr")
+}
+
+print("MediaRemoteBridge: procesos huérfanos")
+let psSample = """
+  100     1 /usr/bin/perl /Applications/NotchDrop.app/Contents/Resources/MediaRemoteAdapter/run.pl /Applications/NotchDrop.app/Contents/Resources/MediaRemoteAdapter/libMediaRemoteAdapter.dylib loop
+  101   555 /usr/bin/perl /Applications/NotchDrop.app/Contents/Resources/MediaRemoteAdapter/run.pl /Applications/NotchDrop.app/Contents/Resources/MediaRemoteAdapter/libMediaRemoteAdapter.dylib loop
+  102     1 /usr/bin/perl /Users/x/NotchDrop.app/Contents/Resources/MediaRemoteAdapter/run.pl /Users/x/NotchDrop.app/Contents/Resources/MediaRemoteAdapter/libMediaRemoteAdapter.dylib loop
+  103     1 /usr/bin/perl /tmp/otro-script.pl loop
+  104     1 /usr/bin/perl /Applications/NotchDrop.app/Contents/Resources/MediaRemoteAdapter/run.pl /Applications/NotchDrop.app/Contents/Resources/MediaRemoteAdapter/libMediaRemoteAdapter.dylib get
+  105     1 /Applications/Other.app/Contents/MacOS/Other
+"""
+let orphans = MediaRemoteBridge.orphanPIDs(inPSOutput: psSample)
+check(orphans == [100, 102], "solo los perl del adaptador con padre 1 y 'loop' son huérfanos (fue \(orphans))")
+check(!orphans.contains(101), "el que tiene un padre vivo NO se toca")
+check(!orphans.contains(103), "otro script perl no se toca")
+check(!orphans.contains(104), "una consulta puntual (get) no se toca")
+check(MediaRemoteBridge.orphanPIDs(inPSOutput: "").isEmpty, "salida vacía → nada")
+check(MediaRemoteBridge.orphanPIDs(inPSOutput: "basura sin números\n  x y z").isEmpty, "líneas malformadas se ignoran")
+
 print("\nRESULTADO: \(passed) pass / \(failed) fail")
 exit(failed == 0 ? 0 : 1)

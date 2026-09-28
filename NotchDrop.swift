@@ -1712,6 +1712,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     var notchDiagnosticLabel: NSTextField!
     var downloaderStatusLabel: NSTextField!
     var cookieBrowserPopup: NSPopUpButton!
+    var updateStatusLabel: NSTextField!
+    var updateActionBtn: NSButton!
+    var availableUpdate: UpdateRelease?
+    var isInstallingUpdate = false
+    var updateCheckTimer: Timer?
+    let autoUpdateDefaultsKey = "NotchDropAutoCheckUpdates"
+    let lastUpdateCheckDefaultsKey = "NotchDropLastUpdateCheck"
+    let notifiedUpdateVersionDefaultsKey = "NotchDropNotifiedUpdateVersion"
+    let updateNotificationID = "com.marcelo.notchdrop.update"
+    // On by default; the key is only written once the user flips the switch.
+    var autoUpdateEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: autoUpdateDefaultsKey) == nil ? true : UserDefaults.standard.bool(forKey: autoUpdateDefaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: autoUpdateDefaultsKey) }
+    }
+    var currentVersion: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0" }
     let hoverToOpenDefaultsKey = "NotchDropHoverToOpenEnabled"
     // Defaults to true (existing behavior) when the key has never been written.
     var hoverToOpenEnabled: Bool {
@@ -1910,6 +1925,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        scheduleUpdateChecks()
         targetScreen = pickTargetScreen()
         NotificationCenter.default.addObserver(self, selector: #selector(handleScreenParametersChanged),
                                                 name: NSApplication.didChangeScreenParametersNotification, object: nil)
@@ -3447,7 +3463,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         ])
         settingsStack.addArrangedSubview(hcard); hcard.widthAnchor.constraint(equalTo: settingsStack.widthAnchor).isActive = true
 
-        // 4. About / Quit
+        // 4. Updates
+        let ucard = makeCardView()
+        let ul = lbl("🔄 ACTUALIZACIONES", 14, .bold, NSColor.systemTeal)
+        updateStatusLabel = lbl("Versión \(currentVersion)", 10, .regular, C.textMuted)
+        updateStatusLabel.maximumNumberOfLines = 2
+        updateActionBtn = NSButton(title: "Buscar ahora", target: self, action: #selector(updateButtonPressed))
+        updateActionBtn.bezelStyle = .recessed; updateActionBtn.controlSize = .small
+        updateActionBtn.translatesAutoresizingMaskIntoConstraints = false
+        let (autoRow, _) = settingsToggleRow(
+            title: "Buscar actualizaciones automáticamente",
+            subtitle: "Una vez al día, en GitHub. Nunca se instala nada sin que pulses Actualizar.",
+            isOn: autoUpdateEnabled,
+            action: #selector(toggleAutoUpdate(_:))
+        )
+        ucard.addSubview(ul); ucard.addSubview(updateStatusLabel); ucard.addSubview(updateActionBtn); ucard.addSubview(autoRow)
+        NSLayoutConstraint.activate([
+            ul.topAnchor.constraint(equalTo: ucard.topAnchor, constant: 16), ul.leadingAnchor.constraint(equalTo: ucard.leadingAnchor, constant: 16),
+            updateActionBtn.centerYAnchor.constraint(equalTo: ul.centerYAnchor), updateActionBtn.trailingAnchor.constraint(equalTo: ucard.trailingAnchor, constant: -16),
+            updateStatusLabel.topAnchor.constraint(equalTo: ul.bottomAnchor, constant: 6),
+            updateStatusLabel.leadingAnchor.constraint(equalTo: ul.leadingAnchor),
+            updateStatusLabel.trailingAnchor.constraint(equalTo: ucard.trailingAnchor, constant: -16),
+            autoRow.topAnchor.constraint(equalTo: updateStatusLabel.bottomAnchor, constant: 10),
+            autoRow.leadingAnchor.constraint(equalTo: ucard.leadingAnchor, constant: 16),
+            autoRow.trailingAnchor.constraint(equalTo: ucard.trailingAnchor, constant: -16),
+            ucard.bottomAnchor.constraint(equalTo: autoRow.bottomAnchor, constant: 14)
+        ])
+        settingsStack.addArrangedSubview(ucard); ucard.widthAnchor.constraint(equalTo: settingsStack.widthAnchor).isActive = true
+
+        // 5. About / Quit
         let qcard = makeCardView()
         // Reads the real bundle version instead of a hardcoded string — the
         // source header comment, Info.plist, and this label had all drifted to
@@ -3561,6 +3605,78 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     @objc func replayOnboarding() {
         UserDefaults.standard.set(false, forKey: onboardingDefaultsKey)
         startOnboarding()
+    }
+
+    // MARK: Update checks
+
+    func scheduleUpdateChecks() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in self?.maybeAutoCheckForUpdates() }
+        // An hourly tick that only acts once a day survives sleep better than a single 24 h timer.
+        updateCheckTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+            self?.maybeAutoCheckForUpdates()
+        }
+    }
+
+    func maybeAutoCheckForUpdates() {
+        guard autoUpdateEnabled, !isInstallingUpdate else { return }
+        let last = UserDefaults.standard.double(forKey: lastUpdateCheckDefaultsKey)
+        guard Date().timeIntervalSince1970 - last > 20 * 3600 else { return }
+        checkForUpdates(userInitiated: false)
+    }
+
+    func checkForUpdates(userInitiated: Bool) {
+        if userInitiated { updateStatusLabel?.stringValue = "Buscando…" }
+        UpdateFeed.fetchLatest { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let rel) where UpdateVersion.isNewer(rel.version, than: self.currentVersion):
+                UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: self.lastUpdateCheckDefaultsKey)
+                self.availableUpdate = rel
+                self.updateStatusLabel?.stringValue = "Versión \(rel.version) disponible (tienes \(self.currentVersion))"
+                self.updateActionBtn?.title = "Actualizar"
+                if !userInitiated, UserDefaults.standard.string(forKey: self.notifiedUpdateVersionDefaultsKey) != rel.version {
+                    UserDefaults.standard.set(rel.version, forKey: self.notifiedUpdateVersionDefaultsKey)
+                    self.postUpdateNotification(rel.version)
+                }
+            case .success:
+                UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: self.lastUpdateCheckDefaultsKey)
+                self.availableUpdate = nil
+                if userInitiated { self.updateStatusLabel?.stringValue = "Tienes la última versión (\(self.currentVersion))" }
+            case .failure(let e):
+                // A failed background check stays silent and is retried on the next hourly tick.
+                if userInitiated { self.updateStatusLabel?.stringValue = e.message }
+            }
+        }
+    }
+
+    @objc func updateButtonPressed() {
+        guard let rel = availableUpdate else { checkForUpdates(userInitiated: true); return }
+        guard !isInstallingUpdate else { return }
+        isInstallingUpdate = true
+        updateActionBtn.isEnabled = false
+        updateStatusLabel.stringValue = "Descargando y verificando \(rel.version)…"
+        UpdateInstaller.install(rel, currentApp: Bundle.main.bundleURL,
+                                expectedBundleID: Bundle.main.bundleIdentifier ?? "com.marcelo.notchdrop") { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let app):
+                self.updateStatusLabel.stringValue = "Listo. Reiniciando…"
+                UpdateInstaller.relaunch(app)
+            case .failure(let e):
+                self.isInstallingUpdate = false
+                self.updateActionBtn.isEnabled = true
+                self.updateStatusLabel.stringValue = e.message
+            }
+        }
+    }
+
+    @objc func toggleAutoUpdate(_ sender: NSSwitch) { autoUpdateEnabled = sender.state == .on }
+
+    func postUpdateNotification(_ version: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "NotchDrop \(version) disponible"
+        content.body = "Abre Ajustes en el notch y pulsa Actualizar."
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: updateNotificationID, content: content, trigger: nil))
     }
 
     @objc func quitApp() {
@@ -4472,6 +4588,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         if response.notification.request.identifier == alarmNotificationID {
             DispatchQueue.main.async { [weak self] in self?.stopAlarmRinging() }
+        } else if response.notification.request.identifier == updateNotificationID {
+            DispatchQueue.main.async { [weak self] in
+                self?.expandPanel(withHaptic: true)
+                self?.openSettings()
+            }
         }
         completionHandler()
     }

@@ -1,5 +1,7 @@
 import Foundation
 import CryptoKit
+import PDFKit
+import ImageIO
 
 var passed = 0, failed = 0
 func check(_ ok: Bool, _ label: String) {
@@ -242,6 +244,71 @@ check(!orphans.contains(103), "otro script perl no se toca")
 check(!orphans.contains(104), "una consulta puntual (get) no se toca")
 check(MediaRemoteBridge.orphanPIDs(inPSOutput: "").isEmpty, "salida vacía → nada")
 check(MediaRemoteBridge.orphanPIDs(inPSOutput: "basura sin números\n  x y z").isEmpty, "líneas malformadas se ignoran")
+
+print("PDF → imágenes")
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("nd-pdf-\(UUID().uuidString)")
+    try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    func makePDF(_ name: String, pages: [(r: CGFloat, g: CGFloat, b: CGFloat)]) -> URL {
+        let url = dir.appendingPathComponent(name)
+        var box = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let ctx = CGContext(url as CFURL, mediaBox: &box, nil)!
+        for c in pages {
+            ctx.beginPDFPage(nil)
+            ctx.setFillColor(CGColor(red: c.r, green: c.g, blue: c.b, alpha: 1)); ctx.fill(box)
+            ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: 100, height: 100))
+            ctx.endPDFPage()
+        }
+        ctx.closePDF(); return url
+    }
+    func convertSync(_ url: URL, _ ext: String) -> FileConverter.Outcome {
+        var r: FileConverter.Outcome?
+        FileConverter.convert(url, to: ext) { r = $0 }
+        let end = Date().addingTimeInterval(60)
+        while r == nil && Date() < end { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05)) }
+        return r ?? .failure("timeout")
+    }
+    // (ancho, alto, píxel RGB) de una imagen escrita a disco; (x, y) desde arriba-izquierda.
+    func probe(_ url: URL, x: Int, y: Int) -> (Int, Int, [Int])? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil), let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+        var px = [UInt8](repeating: 0, count: 4)
+        let ctx = CGContext(data: &px, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        ctx.draw(img, in: CGRect(x: -x, y: -(img.height - 1 - y), width: img.width, height: img.height))
+        return (img.width, img.height, [Int(px[0]), Int(px[1]), Int(px[2])])
+    }
+    let three = makePDF("tres.pdf", pages: [(1, 0, 0), (0, 1, 0), (0, 0, 1)])
+    if case .success(let first) = convertSync(three, "png") {
+        check(first.lastPathComponent == "tres-p1.png", "primera página: tres-p1.png (fue \(first.lastPathComponent))")
+        let files = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).filter { $0.hasSuffix(".png") }.sorted()
+        check(files == ["tres-p1.png", "tres-p2.png", "tres-p3.png"], "una imagen por página: \(files)")
+        // El color exacto lo decide la gestión de color de macOS (el código anterior también
+        // daba [255, 38, 0] para rojo puro), así que se comprueba el color DOMINANTE.
+        let expected: [(String, Int)] = [("tres-p1.png", 0), ("tres-p2.png", 1), ("tres-p3.png", 2)]
+        for (name, channel) in expected {
+            let u = dir.appendingPathComponent(name)
+            if let (w, h, rgb) = probe(u, x: 900, y: 300) {
+                check(w == 2448 && h == 3168, "\(name): 4× de 612×792 = 2448×3168 (fue \(w)×\(h))")
+                check(rgb[channel] >= 245 && rgb.enumerated().allSatisfy { $0.offset == channel || $0.element <= 60 },
+                      "\(name): el color dominante es el del canal \(channel) (fue \(rgb))")
+                // esquina inferior izquierda del PDF = negro (comprueba que no quedó de cabeza)
+                if let (_, _, corner) = probe(u, x: 40, y: h - 40) { check(corner == [0, 0, 0], "\(name): el cuadro negro está abajo a la izquierda (fue \(corner))") }
+                if let (_, _, top) = probe(u, x: 40, y: 40) { check(top != [0, 0, 0], "\(name): arriba a la izquierda NO es negro (fue \(top))") }
+            } else { check(false, "\(name): no se pudo leer") }
+        }
+    } else { check(false, "PDF de 3 páginas → png falló") }
+    let one = makePDF("una.pdf", pages: [(0.5, 0.5, 0.5)])
+    if case .success(let f) = convertSync(one, "jpg") {
+        check(f.lastPathComponent == "una.jpg", "una sola página: sin sufijo (fue \(f.lastPathComponent))")
+        if let (w, h, rgb) = probe(f, x: 900, y: 300) {
+            check(w == 2448 && h == 3168, "jpg: 2448×3168")
+            check(rgb.allSatisfy { abs($0 - 138) <= 20 }, "jpg: gris medio (fue \(rgb))")
+        } else { check(false, "jpg ilegible") }
+    } else { check(false, "PDF de 1 página → jpg falló") }
+    let empty = dir.appendingPathComponent("roto.pdf"); try! Data("no soy un pdf".utf8).write(to: empty)
+    if case .failure = convertSync(empty, "png") { check(true, "PDF inválido falla con mensaje") } else { check(false, "PDF inválido debía fallar") }
+}
 
 print("\nRESULTADO: \(passed) pass / \(failed) fail")
 exit(failed == 0 ? 0 : 1)

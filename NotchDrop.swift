@@ -1228,31 +1228,42 @@ enum FileConverter {
         }
         var firstWritten: URL?
         // Multi-page PDFs become one image per page, numbered.
+        // Each page is drawn straight into one bitmap and written with ImageIO.
+        // It used to go NSImage → TIFF → NSBitmapImageRep → PNG: three full-size
+        // copies of every page, none of them released until the whole PDF was done.
         for index in 0..<doc.pageCount {
-            guard let page = doc.page(at: index) else { continue }
-            let bounds = page.bounds(for: .mediaBox)
-            // 2× for a usable resolution rather than a screen-sized thumbnail.
-            let size = NSSize(width: bounds.width * 2, height: bounds.height * 2)
-            let image = NSImage(size: size)
-            image.lockFocus()
-            NSColor.white.setFill()
-            NSRect(origin: .zero, size: size).fill()
-            if let ctx = NSGraphicsContext.current?.cgContext {
-                ctx.scaleBy(x: 2, y: 2)
+            var failure: Outcome?
+            autoreleasepool {
+                guard let page = doc.page(at: index) else { return }
+                let bounds = page.bounds(for: .mediaBox)
+                // 4× (288 dpi). The old NSImage path was documented as 2× but lockFocus
+                // doubled it again on a Retina display, so this is the resolution people
+                // were already getting there — now on every Mac, and capped so a poster-size
+                // page can't ask for a multi-hundred-megabyte bitmap.
+                let scale = min(4, 9000 / max(bounds.width, bounds.height))
+                let w = Int((bounds.width * scale).rounded()), h = Int((bounds.height * scale).rounded())
+                guard w > 0, h > 0, let space = CGColorSpace(name: CGColorSpace.sRGB),
+                      let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                          space: space, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return }
+                ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+                ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+                ctx.scaleBy(x: scale, y: scale)
                 page.draw(with: .mediaBox, to: ctx)
-            }
-            image.unlockFocus()
+                guard let image = ctx.makeImage() else { return }
 
-            guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { continue }
-            let type: NSBitmapImageRep.FileType = (ext == "png") ? .png : .jpeg
-            let props: [NSBitmapImageRep.PropertyKey: Any] = (ext == "png") ? [:] : [.compressionFactor: 0.92]
-            guard let data = rep.representation(using: type, properties: props) else { continue }
-            let suffix = doc.pageCount > 1 ? "-p\(index + 1)" : ""
-            let out = output(for: url, ext: ext, suffix: suffix)
-            do {
-                try data.write(to: out)
-                if firstWritten == nil { firstWritten = out }
-            } catch { return .failure(error.localizedDescription) }
+                let suffix = doc.pageCount > 1 ? "-p\(index + 1)" : ""
+                let out = output(for: url, ext: ext, suffix: suffix)
+                let uti = (ext == "png") ? "public.png" : "public.jpeg"
+                guard let dest = CGImageDestinationCreateWithURL(out as CFURL, uti as CFString, 1, nil) else { return }
+                let props: [CFString: Any] = (ext == "png") ? [:] : [kCGImageDestinationLossyCompressionQuality: 0.92]
+                CGImageDestinationAddImage(dest, image, props as CFDictionary)
+                if CGImageDestinationFinalize(dest) {
+                    if firstWritten == nil { firstWritten = out }
+                } else {
+                    failure = .failure("No se pudo escribir la página \(index + 1).")
+                }
+            }
+            if let failure { return failure }
         }
         guard let first = firstWritten else { return .failure("No se pudo convertir ninguna página.") }
         return .success(first)

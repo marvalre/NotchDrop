@@ -15,6 +15,17 @@ git reset --hard v3.9.1
 
 ---
 
+## v3.13.1 — Convertir PDF a imagen ya no se come toda la memoria
+
+**Arreglado**
+- **PDF → PNG/JPG usaba una cantidad absurda de memoria.** Un PDF de 40 páginas grandes llegaba a **5.4–7.2 GB** de pico; ahora usa **195 MB**, igual en cada corrida. El código hacía tres copias completas de cada página (imagen → TIFF → bitmap → archivo) y no soltaba ninguna hasta terminar el PDF. Ahora dibuja cada página en un solo bitmap y lo guarda con ImageIO, liberándolo antes de la siguiente.
+- La resolución de salida se conserva: 4× (288 dpi). El código anterior decía 2× pero en pantallas Retina generaba 4× sin querer; ahora es 4× en cualquier Mac, con un tope de 9000 px para páginas tamaño póster.
+
+**Verificación**
+- Pruebas con un PDF real de 3 páginas de colores: cantidad de imágenes y nombres, dimensiones exactas, color de cada página, orientación (el cuadro negro queda abajo a la izquierda), JPG de una sola página y un PDF inválido. Medición de memoria antes/después con el mismo PDF.
+
+---
+
 ## v3.13.0 — La app se actualiza sola (con un clic) y una tanda de arreglos
 
 **Agregado**

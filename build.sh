@@ -34,6 +34,7 @@ swiftc \
   -framework ServiceManagement \
   -framework Carbon \
   -framework PDFKit \
+  -framework CryptoKit \
   -O NotchDrop.swift -o "$CONTENTS/MacOS/NotchDrop"
 chmod +x "$CONTENTS/MacOS/NotchDrop"
 

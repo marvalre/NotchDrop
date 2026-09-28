@@ -15,6 +15,15 @@ git reset --hard v3.9.1
 
 ---
 
+## v3.13.2 — ⌥⌘N ya no se cierra solo, comprimir audio ya no falla
+
+**Arreglado**
+- Abrir el panel con **⌥⌘N** mientras el mouse estaba lejos del notch (el caso normal de un atajo) a veces lo volvía a cerrar casi de inmediato. La animación de apertura reconstruye el área de detección de mouse en cada cuadro, y eso podía disparar un "mouse salió" espurio incluso con el cursor lejísimos — con hover esto nunca se notaba porque el cursor ya estaba encima. Ahora ese cierre automático se ignora mientras el panel todavía se está animando.
+- **Comprimir** un archivo de audio (Herramientas → Convertir → Comprimir) fallaba para casi cualquier formato salvo `.m4a`: siempre recodificaba a AAC pero guardaba el resultado con la extensión original — un `.mp3` terminaba siendo audio AAC dentro de un contenedor `.mp3`, que ffmpeg rechaza. Ahora el códec coincide con el contenedor de salida (`libmp3lame` para mp3, `libopus` para ogg/opus, AAC para el resto); los formatos sin pérdida (wav/aiff/flac), que no tienen forma real de "pesar menos" sin cambiar de códec, se reempacan como `.m4a` en vez de fallar en silencio.
+- Convertir un PDF de muchas páginas a imágenes podía acumular memoria: cada página generaba una imagen temporal en un mismo bloque de trabajo cuyo autorelease pool no se vaciaba hasta terminar el documento completo. Ahora cada página libera sus temporales antes de pasar a la siguiente.
+
+---
+
 ## v3.13.1 — Currency ya no confunde "1,000" con 1
 
 **Arreglado**

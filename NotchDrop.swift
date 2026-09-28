@@ -1239,7 +1239,17 @@ enum FileConverter {
         // Leave headroom for container overhead so the result lands under target.
         let targetBitsPerSecond = (targetBytes * 8.0 / duration) * 0.95
 
-        let out = output(for: url, ext: url.pathExtension.lowercased(), suffix: "-comprimido")
+        let sourceExt = url.pathExtension.lowercased()
+        // Lossless containers (wav/aiff/flac) have no meaningful "lower
+        // bitrate" short of changing codec entirely, so those get rewrapped
+        // as .m4a/AAC instead. This also fixes the real bug this replaced:
+        // the audio branch below always encoded AAC while the output kept
+        // the *source's* extension, so compressing an actual .mp3 (or
+        // .wav/.flac/...) paired an AAC stream with a container that can't
+        // hold it — ffmpeg's muxer rejected it outright.
+        let losslessAudioContainers: Set<String> = ["wav", "aiff", "aif", "flac"]
+        let outExt = (!isVideo && losslessAudioContainers.contains(sourceExt)) ? "m4a" : sourceExt
+        let out = output(for: url, ext: outExt, suffix: "-comprimido")
         var args = ["-y", "-i", url.path]
 
         if isVideo {
@@ -1272,7 +1282,14 @@ enum FileConverter {
             }
         } else {
             let audioBps = max(48_000.0, targetBitsPerSecond)
-            args += ["-c:a", "aac", "-b:a", "\(Int(audioBps / 1000))k"]
+            switch outExt {
+            case "mp3":
+                args += ["-c:a", "libmp3lame", "-b:a", "\(Int(audioBps / 1000))k"]
+            case "ogg", "opus":
+                args += ["-c:a", "libopus", "-b:a", "\(Int(audioBps / 1000))k"]
+            default:
+                args += ["-c:a", "aac", "-b:a", "\(Int(audioBps / 1000))k"]
+            }
         }
         args.append(out.path)
 
@@ -1366,33 +1383,44 @@ enum FileConverter {
             return .failure("No se pudo leer el PDF.")
         }
         var firstWritten: URL?
-        // Multi-page PDFs become one image per page, numbered.
+        var writeError: String?
+        // Multi-page PDFs become one image per page, numbered. Each page's
+        // NSImage/tiffRepresentation/NSBitmapImageRep are sizeable temporaries
+        // (2× render scale), and this loop runs inside a single GCD work item
+        // whose autorelease pool only drains once the whole closure returns —
+        // not once per iteration — so without an explicit pool here, a
+        // many-page PDF piles up every page's temporaries at once instead of
+        // releasing each before starting the next.
         for index in 0..<doc.pageCount {
-            guard let page = doc.page(at: index) else { continue }
-            let bounds = page.bounds(for: .mediaBox)
-            // 2× for a usable resolution rather than a screen-sized thumbnail.
-            let size = NSSize(width: bounds.width * 2, height: bounds.height * 2)
-            let image = NSImage(size: size)
-            image.lockFocus()
-            NSColor.white.setFill()
-            NSRect(origin: .zero, size: size).fill()
-            if let ctx = NSGraphicsContext.current?.cgContext {
-                ctx.scaleBy(x: 2, y: 2)
-                page.draw(with: .mediaBox, to: ctx)
-            }
-            image.unlockFocus()
+            autoreleasepool {
+                guard let page = doc.page(at: index) else { return }
+                let bounds = page.bounds(for: .mediaBox)
+                // 2× for a usable resolution rather than a screen-sized thumbnail.
+                let size = NSSize(width: bounds.width * 2, height: bounds.height * 2)
+                let image = NSImage(size: size)
+                image.lockFocus()
+                NSColor.white.setFill()
+                NSRect(origin: .zero, size: size).fill()
+                if let ctx = NSGraphicsContext.current?.cgContext {
+                    ctx.scaleBy(x: 2, y: 2)
+                    page.draw(with: .mediaBox, to: ctx)
+                }
+                image.unlockFocus()
 
-            guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { continue }
-            let type: NSBitmapImageRep.FileType = (ext == "png") ? .png : .jpeg
-            let props: [NSBitmapImageRep.PropertyKey: Any] = (ext == "png") ? [:] : [.compressionFactor: 0.92]
-            guard let data = rep.representation(using: type, properties: props) else { continue }
-            let suffix = doc.pageCount > 1 ? "-p\(index + 1)" : ""
-            let out = output(for: url, ext: ext, suffix: suffix)
-            do {
-                try data.write(to: out)
-                if firstWritten == nil { firstWritten = out }
-            } catch { return .failure(error.localizedDescription) }
+                guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { return }
+                let type: NSBitmapImageRep.FileType = (ext == "png") ? .png : .jpeg
+                let props: [NSBitmapImageRep.PropertyKey: Any] = (ext == "png") ? [:] : [.compressionFactor: 0.92]
+                guard let data = rep.representation(using: type, properties: props) else { return }
+                let suffix = doc.pageCount > 1 ? "-p\(index + 1)" : ""
+                let out = output(for: url, ext: ext, suffix: suffix)
+                do {
+                    try data.write(to: out)
+                    if firstWritten == nil { firstWritten = out }
+                } catch { writeError = error.localizedDescription }
+            }
+            if writeError != nil { break }
         }
+        if let writeError { return .failure(writeError) }
         guard let first = firstWritten else { return .failure("No se pudo convertir ninguna página.") }
         return .success(first)
     }
@@ -2139,7 +2167,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             // Auto-collapse on mouse-out: passive, so no haptic. (Went through
             // toggleExpandedState before, which made the trackpad click itself
             // every time the cursor drifted off the panel.)
-            if self?.isExpanded == true && self?.isReceivingFileDrag == false { self?.collapsePanel() }
+            //
+            // isTransitioning guards against a real bug: opening with ⌥⌘N while
+            // the cursor is anywhere else on screen (the common case — you're
+            // not hovering the notch, that's the point of a shortcut) used to
+            // re-collapse the panel almost instantly. mainView is the panel's
+            // contentView, so it resizes — and rebuilds its NSTrackingArea — on
+            // every frame of the 0.38s expand animation; AppKit fires a spurious
+            // mouseExited from that churn while the cursor is nowhere near the
+            // window. Hover-to-open never showed this because the cursor is
+            // already on the panel by definition, so the guard below was never
+            // exercised there.
+            if self?.isExpanded == true && self?.isTransitioning == false && self?.isReceivingFileDrag == false { self?.collapsePanel() }
         }
         (mainView as? PanelBackgroundView)?.onDragEnter = { [weak self] in
             self?.prepareShelfForDrop()

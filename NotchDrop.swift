@@ -5376,6 +5376,75 @@ enum UpdateSignature {
     }
 }
 
+struct UpdateRelease: Equatable {
+    let version: String
+    let zipURL: URL
+    let signatureURL: URL
+    let pageURL: URL
+}
+
+enum UpdateError: Error {
+    case http(Int), network(String), noRelease, badSignature, invalidBundle(String), notWritable, extractFailed, replaceFailed(String)
+    var message: String {
+        switch self {
+        case .http(let c): return "GitHub respondió con error \(c). Intenta más tarde."
+        case .network(let m): return "Sin conexión: \(m)"
+        case .noRelease: return "No encontré una versión publicada."
+        case .badSignature: return "La actualización no pasó la verificación de seguridad y no se instaló."
+        case .invalidBundle(let m): return "La actualización descargada no es válida (\(m)). No se instaló."
+        case .notWritable: return "No tengo permiso para reemplazar la app en su carpeta. Descárgala a mano desde GitHub."
+        case .extractFailed: return "No pude descomprimir la actualización."
+        case .replaceFailed(let m): return "No pude reemplazar la app: \(m). Tu versión actual sigue intacta."
+        }
+    }
+}
+
+enum UpdateFeed {
+    static let defaultURL = URL(string: "https://api.github.com/repos/marvalre/NotchDrop/releases/latest")!
+    // Debug override for end-to-end tests against a local server. Signatures are
+    // still required, so pointing it elsewhere can't install anything unsigned.
+    static var url: URL {
+        UserDefaults.standard.string(forKey: "NotchDropUpdateFeedURL").flatMap(URL.init(string:)) ?? defaultURL
+    }
+
+    static func isAllowed(_ url: URL) -> Bool {
+        if url.scheme == "https" { return true }
+        return url.scheme == "http" && ["127.0.0.1", "localhost"].contains(url.host ?? "")
+    }
+
+    static func parse(_ data: Data) -> UpdateRelease? {
+        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let tag = obj["tag_name"] as? String,
+              let assets = obj["assets"] as? [[String: Any]] else { return nil }
+        if (obj["draft"] as? Bool) == true || (obj["prerelease"] as? Bool) == true { return nil }
+        let version = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+        guard UpdateVersion.components(version) != nil else { return nil }
+        func asset(_ name: String) -> URL? {
+            assets.first { ($0["name"] as? String) == name }
+                .flatMap { ($0["browser_download_url"] as? String).flatMap(URL.init(string:)) }
+                .flatMap { isAllowed($0) ? $0 : nil }
+        }
+        guard let zip = asset("NotchDrop-\(version).zip"),
+              let sig = asset("NotchDrop-\(version).zip.sig") else { return nil }
+        let page = (obj["html_url"] as? String).flatMap(URL.init(string:)) ?? zip
+        return UpdateRelease(version: version, zipURL: zip, signatureURL: sig, pageURL: page)
+    }
+
+    static func fetchLatest(completion: @escaping (Result<UpdateRelease, UpdateError>) -> Void) {
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 15
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        URLSession.shared.dataTask(with: req) { data, resp, err in
+            let result: Result<UpdateRelease, UpdateError>
+            if let err { result = .failure(.network(err.localizedDescription)) }
+            else if let h = resp as? HTTPURLResponse, h.statusCode != 200 { result = .failure(.http(h.statusCode)) }
+            else if let rel = data.flatMap(parse) { result = .success(rel) }
+            else { result = .failure(.noRelease) }
+            DispatchQueue.main.async { completion(result) }
+        }.resume()
+    }
+}
+
 // Compiled out for the test runner (tests/run.sh), which links this file as a
 // library next to tests/main.swift. An @main entry point rather than top-level
 // statements because Swift rejects top-level code in a non-main file even inside

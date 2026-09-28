@@ -64,5 +64,29 @@ check(UpdateSignature.verify(data: payload, signatureBase64: goodSig + "\n", pub
 
 check(Data(base64Encoded: UpdateSignature.publicKeyBase64)?.count == 32, "la llave pública de producción está configurada (32 bytes)")
 
+print("UpdateFeed")
+let feedJSON = """
+{"tag_name":"v3.13.1","html_url":"https://github.com/marvalre/NotchDrop/releases/tag/v3.13.1","draft":false,"prerelease":false,
+ "assets":[{"name":"NotchDrop-3.13.1.zip","browser_download_url":"https://github.com/marvalre/NotchDrop/releases/download/v3.13.1/NotchDrop-3.13.1.zip"},
+           {"name":"NotchDrop-3.13.1.zip.sig","browser_download_url":"https://github.com/marvalre/NotchDrop/releases/download/v3.13.1/NotchDrop-3.13.1.zip.sig"}]}
+""".data(using: .utf8)!
+let rel = UpdateFeed.parse(feedJSON)
+check(rel?.version == "3.13.1", "parsea versión sin la 'v'")
+check(rel?.zipURL.lastPathComponent == "NotchDrop-3.13.1.zip", "encuentra el zip")
+check(rel?.signatureURL.lastPathComponent == "NotchDrop-3.13.1.zip.sig", "encuentra la firma")
+let noSig = """
+{"tag_name":"v3.13.1","html_url":"https://x","assets":[{"name":"NotchDrop-3.13.1.zip","browser_download_url":"https://x/NotchDrop-3.13.1.zip"}]}
+""".data(using: .utf8)!
+check(UpdateFeed.parse(noSig) == nil, "release sin .sig se ignora (versiones viejas sin firmar)")
+let prerelease = String(decoding: feedJSON, as: UTF8.self).replacingOccurrences(of: "\"prerelease\":false", with: "\"prerelease\":true")
+check(UpdateFeed.parse(Data(prerelease.utf8)) == nil, "prerelease se ignora")
+let draft = String(decoding: feedJSON, as: UTF8.self).replacingOccurrences(of: "\"draft\":false", with: "\"draft\":true")
+check(UpdateFeed.parse(Data(draft.utf8)) == nil, "borrador se ignora")
+check(UpdateFeed.parse(Data("no json".utf8)) == nil, "JSON inválido → nil")
+check(UpdateFeed.isAllowed(URL(string: "https://github.com/x")!), "https permitido")
+check(UpdateFeed.isAllowed(URL(string: "http://127.0.0.1:8765/x")!), "http local permitido (pruebas)")
+check(!UpdateFeed.isAllowed(URL(string: "http://evil.example/x")!), "http remoto rechazado")
+check(!UpdateFeed.isAllowed(URL(string: "file:///etc/passwd")!), "file:// rechazado")
+
 print("\nRESULTADO: \(passed) pass / \(failed) fail")
 exit(failed == 0 ? 0 : 1)

@@ -1652,6 +1652,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     var settingsBtn: NSButton!
     var convertTabBtn: NSButton!
     var currencyTabBtn: NSButton!
+    var tabsStack: NSStackView!
+    var allTabButtons: [NSButton] = []
+    var selectedTabButton: NSButton?
 
     // Containers
     var nookContainer: NSView!
@@ -1795,6 +1798,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         b.translatesAutoresizingMaskIntoConstraints = false
         return b
     }
+    // Degrades in steps rather than letting the row overflow: full labels, then
+    // icon-only for every tab except the selected one, then icon-only
+    // everywhere. Measured at runtime, so it adapts to whatever font metrics
+    // and text size the Mac actually renders with instead of assuming ours.
+    func fitTabBar() {
+        guard let tabsStack, let settingsBtn else { return }
+        let available = contentWidth - settingsBtn.fittingSize.width - 12
+        for b in allTabButtons { b.toolTip = b.title }
+        func fits() -> Bool { tabsStack.fittingSize.width <= available }
+        allTabButtons.forEach { $0.imagePosition = .imageLeading }
+        if fits() { return }
+        for b in allTabButtons { b.imagePosition = (b === selectedTabButton) ? .imageLeading : .imageOnly }
+        if fits() { return }
+        allTabButtons.forEach { $0.imagePosition = .imageOnly }
+    }
+
     func makeCardView() -> NSView {
         let v = NSView(); v.wantsLayer = true
         v.layer?.backgroundColor = C.cardBg.cgColor
@@ -2369,19 +2388,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         convertTabBtn = tabBtn("arrow.triangle.2.circlepath", "Convert", tag: 4, action: #selector(switchTab(_:)))
         currencyTabBtn = tabBtn("banknote", "Currency", tag: 5, action: #selector(switchTab(_:)))
 
-        let tabsStack = NSStackView(views: [nooksTabBtn, trayTabBtn, toolsTabBtn, notesTabBtn, convertTabBtn, currencyTabBtn])
-        // Tightened from 20: six tabs plus the gear no longer fit at the smaller
-        // panel sizes otherwise.
+        allTabButtons = [nooksTabBtn, trayTabBtn, toolsTabBtn, notesTabBtn, convertTabBtn, currencyTabBtn]
+        tabsStack = NSStackView(views: allTabButtons)
         tabsStack.spacing = 10; tabsStack.translatesAutoresizingMaskIntoConstraints = false
         topBar.addSubview(tabsStack)
-        NSLayoutConstraint.activate([
-            tabsStack.leadingAnchor.constraint(equalTo: topBar.leadingAnchor),
-            tabsStack.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-        ])
 
         settingsBtn = iconBtn("gearshape.fill", size: 13, color: C.textMuted, action: #selector(openSettings))
         topBar.addSubview(settingsBtn)
         NSLayoutConstraint.activate([
+            tabsStack.leadingAnchor.constraint(equalTo: topBar.leadingAnchor),
+            tabsStack.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            // Without this the row had no right edge: with full labels it fit
+            // this Mac at the small panel size by exactly 0pt, so any other Mac
+            // rendering text a hair wider pushed Currency under the gear and
+            // past the panel. fitTabBar() keeps it inside; this is the backstop.
+            tabsStack.trailingAnchor.constraint(lessThanOrEqualTo: settingsBtn.leadingAnchor, constant: -8),
             settingsBtn.trailingAnchor.constraint(equalTo: topBar.trailingAnchor),
             settingsBtn.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
         ])
@@ -3462,6 +3483,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         let scales: [CGFloat] = [0.85, 1.0, 1.15]
         panelScale = scales[sender.selectedSegment]
         updateContentSizeConstraints()
+        fitTabBar()
         if isExpanded { panel.setFrame(getPanelRect(expanded: true), display: true) }
     }
 
@@ -3688,6 +3710,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         convertContainer.isHidden = (sender.tag != 4)
         currencyContainer.isHidden = (sender.tag != 5)
         settingsContainer.isHidden = true
+        selectedTabButton = sender
+        fitTabBar()
 
         // Opening the Shelf right after copying a link is the whole workflow, so
         // offer the clipboard contents instead of making the user paste manually.
@@ -3714,6 +3738,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         convertContainer.isHidden = true
         currencyContainer.isHidden = true
         settingsContainer.isHidden = false
+        selectedTabButton = nil
+        fitTabBar()
         audioStatusLabel?.stringValue = audioStatusText()
         notchDiagnosticLabel?.stringValue = notchDiagnosticText()
         downloaderStatusLabel?.stringValue = downloaderStatusText()

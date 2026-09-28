@@ -15,6 +15,17 @@ git reset --hard v3.9.1
 
 ---
 
+## v3.12.1 — La barra de pestañas ya no se sale del panel
+
+**Arreglado**
+- En algunas Macs la pestaña **Currency** quedaba cortada en el borde derecho del panel y el engrane de Ajustes se dibujaba encima de ella. La fila de pestañas no tenía límite derecho, y con los 6 nombres completos cabía en el tamaño de panel pequeño con un margen de exactamente 0 pt — cualquier Mac que renderice el texto un poco más ancho la desbordaba.
+- Ahora la barra se adapta al espacio real: si los nombres no caben, las pestañas no seleccionadas se muestran solo con ícono (con su nombre al pasar el mouse) y la seleccionada conserva el suyo. Además tiene un límite derecho fijo, así que nunca vuelve a encimarse con el engrane.
+
+**Verificación**
+- 13 pruebas con AppKit real a distintos anchos disponibles (500, 375, 330 y 200 pt), comprobando que la fila siempre cabe, que la pestaña seleccionada conserva su nombre y que todas tienen tooltip.
+
+---
+
 ## v3.12.0 — Impuesto en Currency + arreglo de layout
 
 **Agregado**

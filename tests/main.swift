@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 var passed = 0, failed = 0
 func check(_ ok: Bool, _ label: String) {
@@ -31,6 +32,37 @@ calc("1,000+2,5", 1002.5, "dos números distintos"); calc("2,5*1,000", 2500, "do
 calc("1,5+1,5", 3, "regresión: cada número por separado"); calc("1,000+1,000", 2000)
 calc("2,500*2", 5000, "miles en operación"); calc("(1,000+500)/3", 500, "miles con paréntesis")
 calc("1,0000", 1, "cuatro decimales con coma"); calc("0,500", 0.5, "0,500 es decimal, no miles"); calc("1,00,000", nil, "agrupación irregular")
+
+print("UpdateVersion")
+check(UpdateVersion.isNewer("3.13.0", than: "3.12.1"), "3.13.0 > 3.12.1")
+check(UpdateVersion.isNewer("v3.13.0", than: "3.12.1"), "acepta 'v' inicial")
+check(UpdateVersion.isNewer("3.12.10", than: "3.12.9"), "compara numéricamente, no como texto")
+check(UpdateVersion.isNewer("4.0", than: "3.99.99"), "distinta longitud")
+check(!UpdateVersion.isNewer("3.12.1", than: "3.12.1"), "igual no es más nueva")
+check(!UpdateVersion.isNewer("3.12.0", than: "3.12.1"), "menor no es más nueva")
+check(!UpdateVersion.isNewer("3.12", than: "3.12.0"), "3.12 == 3.12.0")
+check(!UpdateVersion.isNewer("banana", than: "3.12.1"), "basura no es más nueva")
+check(!UpdateVersion.isNewer("3..1", than: "3.0"), "componente vacío es inválido")
+check(!UpdateVersion.isNewer("3.-1", than: "3.0"), "negativo es inválido")
+check(!UpdateVersion.isNewer("3.13.0-beta", than: "3.12.1"), "prerelease con sufijo se ignora")
+check(UpdateVersion.components("v3.13.0") == [3, 13, 0], "components parsea")
+
+print("UpdateSignature")
+let testKey = Curve25519.Signing.PrivateKey()
+let testPub = testKey.publicKey.rawRepresentation.base64EncodedString()
+let payload = Data("NotchDrop-3.13.1.zip contents".utf8)
+let goodSig = try! testKey.signature(for: payload).base64EncodedString()
+check(UpdateSignature.verify(data: payload, signatureBase64: goodSig, publicKeyBase64: testPub), "firma válida se acepta")
+var tampered = payload; tampered[0] ^= 0xFF
+check(!UpdateSignature.verify(data: tampered, signatureBase64: goodSig, publicKeyBase64: testPub), "un byte alterado se rechaza")
+let otherPub = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation.base64EncodedString()
+check(!UpdateSignature.verify(data: payload, signatureBase64: goodSig, publicKeyBase64: otherPub), "llave equivocada se rechaza")
+check(!UpdateSignature.verify(data: payload, signatureBase64: "no-es-base64!!", publicKeyBase64: testPub), "firma corrupta se rechaza")
+check(!UpdateSignature.verify(data: payload, signatureBase64: "", publicKeyBase64: testPub), "firma vacía se rechaza")
+check(!UpdateSignature.verify(data: payload, signatureBase64: goodSig, publicKeyBase64: ""), "sin llave pública configurada rechaza todo")
+check(UpdateSignature.verify(data: payload, signatureBase64: goodSig + "\n", publicKeyBase64: testPub), "tolera salto de línea final del .sig")
+
+check(Data(base64Encoded: UpdateSignature.publicKeyBase64)?.count == 32, "la llave pública de producción está configurada (32 bytes)")
 
 print("\nRESULTADO: \(passed) pass / \(failed) fail")
 exit(failed == 0 ? 0 : 1)

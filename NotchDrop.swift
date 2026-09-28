@@ -1,4 +1,5 @@
 import Cocoa
+import CryptoKit
 import AVFoundation
 import CoreMedia
 import CoreAudio
@@ -5330,6 +5331,51 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 // ═══════════════════════════════════════════════════════════════════════════
 // MARK: - Entry
 // ═══════════════════════════════════════════════════════════════════════════
+// MARK: - Updates
+
+enum UpdateVersion {
+    // "v3.13.0" / "3.13" → [3, 13, 0] / [3, 13]; nil for anything that isn't
+    // purely non-negative integers separated by dots.
+    static func components(_ s: String) -> [Int]? {
+        var t = s.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("v") || t.hasPrefix("V") { t.removeFirst() }
+        let parts = t.split(separator: ".", omittingEmptySubsequences: false)
+        guard !parts.isEmpty else { return nil }
+        var out: [Int] = []
+        for p in parts {
+            guard !p.isEmpty, p.allSatisfy(\.isASCII), p.allSatisfy(\.isNumber), let n = Int(p) else { return nil }
+            out.append(n)
+        }
+        return out
+    }
+
+    static func isNewer(_ candidate: String, than current: String) -> Bool {
+        guard let a = components(candidate), let b = components(current) else { return false }
+        for i in 0..<max(a.count, b.count) {
+            let x = i < a.count ? a[i] : 0, y = i < b.count ? b[i] : 0
+            if x != y { return x > y }
+        }
+        return false
+    }
+}
+
+enum UpdateSignature {
+    // Public half of the release-signing key. The private half lives only in
+    // the author's Keychain ("NotchDrop update signing key"); see RELEASING.md.
+    // Empty means "no key configured": verify() then rejects everything, so
+    // nothing can ever be installed.
+    static var publicKeyBase64 = "p8w7TNtfGL/OsZa00LQMJp7xfNl0m2iqxXtd5aXu8fQ="
+
+    static func verify(data: Data, signatureBase64: String, publicKeyBase64: String = UpdateSignature.publicKeyBase64) -> Bool {
+        guard let keyData = Data(base64Encoded: publicKeyBase64),
+              let key = try? Curve25519.Signing.PublicKey(rawRepresentation: keyData),
+              let sig = Data(base64Encoded: signatureBase64.trimmingCharacters(in: .whitespacesAndNewlines)),
+              !sig.isEmpty
+        else { return false }
+        return key.isValidSignature(sig, for: data)
+    }
+}
+
 // Compiled out for the test runner (tests/run.sh), which links this file as a
 // library next to tests/main.swift. An @main entry point rather than top-level
 // statements because Swift rejects top-level code in a non-main file even inside

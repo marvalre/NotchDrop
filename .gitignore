@@ -12,3 +12,6 @@ backups/
 
 # Local source snapshots (safety net for reverting)
 snapshots/
+
+# Firmas de release: se generan al publicar y viajan como asset del Release
+*.zip.sig

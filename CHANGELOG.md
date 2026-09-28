@@ -15,6 +15,21 @@ git reset --hard v3.9.1
 
 ---
 
+## v3.13.6 — Pendientes del escaneo
+
+**Arreglado**
+- **Iniciar al abrir sesión:** el interruptor se quedaba en "activado" aunque lo apagaras en Configuración del Sistema. Ahora se actualiza cada vez que abres Ajustes, y si macOS pide aprobación te lleva a esa pantalla.
+- **Pastillas del island** (carátula y onda a los lados del notch): ahora un clic las abre; antes no hacían nada.
+- **Teclado tras cerrar el panel:** si escribías en una nota y el panel se cerraba solo al alejar el mouse, las teclas seguían yendo al panel invisible hasta que hacías clic en tu app. Ahora se le devuelve el foco (macOS 14+).
+- **Barras de scroll clásicas** (cuando hay mouse conectado) comían 15 pt del panel pequeño; ahora todas las áreas de scroll usan barras superpuestas.
+- **Medidor de audio:** carrera de datos entre el hilo de audio y el principal, resuelta con un candado.
+- **Arranque:** la limpieza de procesos huérfanos del reproductor ya no corre en el hilo principal.
+
+**Verificación**
+- 250 pruebas automáticas, la app compilada arranca y no genera reportes de fallo.
+
+---
+
 ## v3.13.5 — Memoria: Netflix en Chrome, portapapeles y descargas
 
 **Arreglado**

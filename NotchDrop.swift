@@ -182,10 +182,21 @@ final class SystemAudioMeter: NSObject {
     private var tapID = AudioObjectID(kAudioObjectUnknown)
     private var aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
     private var ioProcID: AudioDeviceIOProcID?
-    private(set) var isRunning = false
+    // isRunning / isStarting are written from sampleQueue (teardown, failed start) and
+    // from main, and read from main every second; the lock keeps that a defined race.
+    private let stateLock = NSLock()
+    private var _isRunning = false
+    private var _isStarting = false
+    private(set) var isRunning: Bool {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _isRunning }
+        set { stateLock.lock(); _isRunning = newValue; stateLock.unlock() }
+    }
+    private var isStarting: Bool {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _isStarting }
+        set { stateLock.lock(); _isStarting = newValue; stateLock.unlock() }
+    }
     private(set) var isUnavailable = false
     private var isPermanentlyUnsupported = false
-    private var isStarting = false
     private var lastStartAttempt = Date.distantPast
     var onLevels: (([CGFloat]) -> Void)?
 
@@ -534,7 +545,9 @@ final class MediaRemoteBridge {
               FileManager.default.fileExists(atPath: scriptURL.path),
               FileManager.default.fileExists(atPath: libraryURL.path) else { return false }
 
-        Self.reapOrphans()
+        // `ps` (bounded to 5 s) used to run right here on the main thread. Orphans are
+        // matched by ppid == 1, so the adapter started just below (our child) can't be hit.
+        DispatchQueue.global(qos: .utility).async { Self.reapOrphans() }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
         process.arguments = [scriptURL.path, libraryURL.path, "loop"]
@@ -1803,11 +1816,15 @@ class IslandBackgroundView: NSView {
     var onDragEnter: (() -> Void)?
     var onDragExit: (() -> Void)?
     var onFilesDropped: (([URL]) -> Void)?
+    var onClick: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         registerForDraggedTypes(acceptedFileDragTypes)
     }
+    // The pills used to react to drags only; clicking one did nothing.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) { onClick?() }
     required init?(coder: NSCoder) { fatalError() }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
@@ -2642,6 +2659,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             self?.prepareShelfForDrop()
         }
         artBg.onDragExit = { [weak self] in self?.isReceivingFileDrag = false }
+        artBg.onClick = { [weak self] in self?.expandPanel(withHaptic: true) }
         artBg.onFilesDropped = { [weak self] urls in
             self?.acceptDroppedFiles(urls)
         }
@@ -2687,6 +2705,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             self?.prepareShelfForDrop()
         }
         waveBg.onDragExit = { [weak self] in self?.isReceivingFileDrag = false }
+        waveBg.onClick = { [weak self] in self?.expandPanel(withHaptic: true) }
         waveBg.onFilesDropped = { [weak self] urls in
             self?.acceptDroppedFiles(urls)
         }
@@ -3055,7 +3074,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         fileTrayBox.dragEndedCallback = { [weak self] in self?.isReceivingFileDrag = false }
         trayContainer.addSubview(fileTrayBox)
         
-        let scroll = NSScrollView(); scroll.translatesAutoresizingMaskIntoConstraints = false
+        let scroll = NSScrollView(); scroll.scrollerStyle = .overlay; scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.hasHorizontalScroller = true; scroll.hasVerticalScroller = false
         scroll.drawsBackground = false
         // Without this the scroller stayed visible even with nothing to scroll,
@@ -3312,7 +3331,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     // ── Tools Tab ──
     func buildToolsTab() {
-        let scroll = NSScrollView()
+        let scroll = NSScrollView(); scroll.scrollerStyle = .overlay
         scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.translatesAutoresizingMaskIntoConstraints = false
         toolsContainer.addSubview(scroll)
         NSLayoutConstraint.activate([
@@ -3712,7 +3731,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     func buildSettingsTab() {
-        let scroll = NSScrollView()
+        let scroll = NSScrollView(); scroll.scrollerStyle = .overlay
         scroll.hasVerticalScroller = true; scroll.drawsBackground = false; scroll.translatesAutoresizingMaskIntoConstraints = false
         settingsContainer.addSubview(scroll)
         NSLayoutConstraint.activate([
@@ -3946,6 +3965,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         settingsStack.addArrangedSubview(qcard); qcard.widthAnchor.constraint(equalTo: settingsStack.widthAnchor).isActive = true
     }
 
+    // The switch was set once when Settings was built, so turning the login item off in
+    // System Settings left it showing "on" until the next launch.
+    func refreshLaunchAtLoginSwitch() {
+        launchAtLoginSwitch?.state = (SMAppService.mainApp.status == .enabled) ? .on : .off
+    }
+
     @objc func toggleLaunchAtLogin(_ sender: NSSwitch) {
         do {
             if sender.state == .on {
@@ -3955,8 +3980,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             }
         } catch {
             NSLog("NotchDrop: launch-at-login toggle failed: %@", error.localizedDescription)
-            sender.state = (SMAppService.mainApp.status == .enabled) ? .on : .off
         }
+        // macOS may ask the person to approve the item themselves; take them there.
+        if sender.state == .on, SMAppService.mainApp.status == .requiresApproval {
+            SMAppService.openSystemSettingsLoginItems()
+        }
+        refreshLaunchAtLoginSwitch()
     }
 
     @objc func toggleHoverToOpen(_ sender: NSSwitch) {
@@ -4299,6 +4328,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         convertContainer.isHidden = true
         currencyContainer.isHidden = true
         settingsContainer.isHidden = false
+        refreshLaunchAtLoginSwitch()
         selectedTabButton = nil
         fitTabBar()
         audioStatusLabel?.stringValue = audioStatusText()
@@ -4415,6 +4445,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             // Release focus, or checkAutoCollapse's "don't interrupt typing" guard
             // stays true forever after the first use of Notes or the link field.
             self.panel.makeFirstResponder(nil)
+            // Clicking into a field activates NotchDrop; after collapsing, that left keystrokes
+            // going to an invisible panel until the person clicked back into their own app.
+            if #available(macOS 14.0, *), NSApp.isActive, self.panel.isKeyWindow {
+                NSApp.deactivate()
+            }
             self.isTransitioning = false
             self.updateUI()
         })
@@ -5410,7 +5445,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         titleLbl.translatesAutoresizingMaskIntoConstraints = false
         notesContainer.addSubview(titleLbl)
         
-        let scroll = NSScrollView()
+        let scroll = NSScrollView(); scroll.scrollerStyle = .overlay
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
@@ -5595,7 +5630,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // happened here when the tax row landed. A scroll view means this
         // tab can never again go invisible-at-the-bottom regardless of how
         // many rows it grows to.
-        let scroll = NSScrollView()
+        let scroll = NSScrollView(); scroll.scrollerStyle = .overlay
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false

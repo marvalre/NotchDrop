@@ -1642,7 +1642,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     let alarmNotificationID = "com.marcelo.notchdrop.alarm"
     let alarmDateDefaultsKey = "NotchDropAlarmEnd"
     let alarmMinutesDefaultsKey = "NotchDropAlarmMinutes"
-    var swSec = 0; var swOn = false; var swTimer: Timer?
+    var swClock = StopwatchClock(); var swTimer: Timer?
     var clipboard: [ClipItem] = []
     var clipboardExpanded = false
     static let clipVisibleCollapsed = 3
@@ -4739,14 +4739,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     @objc func openClockApp() { NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Clock.app")) }
 
     @objc func toggleSw() {
-        if swOn { swOn = false; swTimer?.invalidate(); swStartBtn.title = "Start" }
-        else { swOn = true; swStartBtn.title = "Pause"; swTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.tickSw() } }
+        if swClock.isRunning {
+            swClock.pause(at: Date()); swTimer?.invalidate(); swTimer = nil
+            swStartBtn.title = "Start"
+        } else {
+            swClock.start(at: Date()); swStartBtn.title = "Pause"
+            let t = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in self?.tickSw() }
+            // .common so it keeps redrawing while a menu is open or the panel is being scrolled.
+            RunLoop.main.add(t, forMode: .common)
+            swTimer = t
+        }
+        tickSw()
     }
-    func tickSw() {
-        swSec += 1; let t = swSec/10
-        swDisplayLabel.stringValue = String(format: "%02d:%02d.%d", t/60, t%60, swSec%10)
+    func tickSw() { swDisplayLabel.stringValue = StopwatchClock.format(swClock.elapsed(at: Date())) }
+    @objc func resetSw() {
+        swClock.reset(); swTimer?.invalidate(); swTimer = nil
+        swDisplayLabel.stringValue = "00:00.0"; swStartBtn.title = "Start"
     }
-    @objc func resetSw() { swOn = false; swTimer?.invalidate(); swSec = 0; swDisplayLabel.stringValue = "00:00.0"; swStartBtn.title = "Start" }
 
     // Types that mean "do not record this in clipboard history". Password managers
     // (1Password, Bitwarden, Keychain…) stamp copied credentials with these, and
@@ -5500,6 +5509,33 @@ enum AutoCollapsePolicy {
         if inside { return (false, entered) }
         if keyboardOpened && !entered { return (false, entered) }
         return (true, entered)
+    }
+}
+
+// Elapsed time comes from wall-clock timestamps, not from counting timer
+// fires. The old stopwatch added 0.1 s per fire, so anything that delayed the
+// timer (scrolling, an open menu, a modal panel, sleep) silently lost time:
+// measured 1.6 s displayed after 4.5 s of real time. Now the timer only
+// redraws; the number is always derived from the clock.
+struct StopwatchClock {
+    private var accumulated: TimeInterval = 0
+    private var startedAt: Date?
+    var isRunning: Bool { startedAt != nil }
+
+    mutating func start(at now: Date) { if startedAt == nil { startedAt = now } }
+    mutating func pause(at now: Date) {
+        guard let s = startedAt else { return }
+        accumulated += max(0, now.timeIntervalSince(s))
+        startedAt = nil
+    }
+    mutating func reset() { accumulated = 0; startedAt = nil }
+    func elapsed(at now: Date) -> TimeInterval {
+        accumulated + (startedAt.map { max(0, now.timeIntervalSince($0)) } ?? 0)
+    }
+    // mm:ss.d — tenths are truncated, like a real stopwatch.
+    static func format(_ t: TimeInterval) -> String {
+        let tenths = max(0, Int(t * 10))
+        return String(format: "%02d:%02d.%d", tenths / 600, (tenths / 10) % 60, tenths % 10)
     }
 }
 

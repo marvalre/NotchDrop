@@ -4855,28 +4855,55 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // those, so typing a half-finished "5*" would take the whole app down.
     // Returns nil for anything it can't evaluate; the caller treats that as
     // "no amount yet" rather than an error.
-    func evaluateArithmetic(_ input: String) -> Double? {
-        // Accept both decimal separators — people type "1,5" as readily as "1.5".
-        let normalized = input.replacingOccurrences(of: ",", with: ".")
+    // Turns ONE typed number into something Double() can read, deciding per
+    // number — never over the whole expression, or "1,5+1,5" would look like it
+    // had a thousands separator. A comma is a decimal point ("1,5") unless it
+    // sits between a 1–3 digit group and exactly three digits ("1,000",
+    // "12,345", "1,000,000"), which reads as thousands grouping. With both
+    // separators present the LAST one is the decimal point ("1,000.50",
+    // "1.000,50"). A lone "." stays a decimal point. Anything irregular is nil.
+    func normalizeNumberLiteral(_ lit: String) -> String? {
+        let commas = lit.filter { $0 == "," }.count
+        let dots = lit.filter { $0 == "." }.count
+        if commas == 0 { return dots <= 1 ? lit : nil }
+        func validLeadingGroup(_ g: String) -> Bool { (1...3).contains(g.count) && !g.hasPrefix("0") }
 
+        if dots == 0 {
+            let groups = lit.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+            if commas == 1 {
+                if groups[1].count == 3, validLeadingGroup(groups[0]) { return groups[0] + groups[1] }
+                return groups[0] + "." + groups[1]
+            }
+            guard validLeadingGroup(groups[0]), groups.dropFirst().allSatisfy({ $0.count == 3 }) else { return nil }
+            return groups.joined()
+        }
+
+        guard let lastComma = lit.lastIndex(of: ","), let lastDot = lit.lastIndex(of: ".") else { return nil }
+        let decimalSep: Character = lastComma > lastDot ? "," : "."
+        let groupSep: Character = decimalSep == "," ? "." : ","
+        guard lit.filter({ $0 == decimalSep }).count == 1 else { return nil }
+        let parts = lit.split(separator: decimalSep, omittingEmptySubsequences: false).map(String.init)
+        let intGroups = parts[0].split(separator: groupSep, omittingEmptySubsequences: false).map(String.init)
+        guard validLeadingGroup(intGroups[0]) || intGroups.count == 1,
+              intGroups.dropFirst().allSatisfy({ $0.count == 3 }) else { return nil }
+        return intGroups.joined() + "." + parts[1]
+    }
+
+    func evaluateArithmetic(_ input: String) -> Double? {
         enum Token: Equatable { case number(Double), plus, minus, times, divide, lparen, rparen }
         var tokens: [Token] = []
-        let chars = Array(normalized)
+        let chars = Array(input)
         var i = 0
         while i < chars.count {
             let c = chars[i]
             if c == " " || c == "\t" { i += 1; continue }
-            if c.isNumber || c == "." {
+            if c.isNumber || c == "." || c == "," {
                 var literal = ""
-                var sawDot = false
-                while i < chars.count, chars[i].isNumber || chars[i] == "." {
-                    if chars[i] == "." {
-                        if sawDot { return nil }
-                        sawDot = true
-                    }
+                while i < chars.count, chars[i].isNumber || chars[i] == "." || chars[i] == "," {
                     literal.append(chars[i]); i += 1
                 }
-                guard let value = Double(literal), value.isFinite else { return nil }
+                guard let clean = normalizeNumberLiteral(literal),
+                      let value = Double(clean), value.isFinite else { return nil }
                 tokens.append(.number(value))
                 continue
             }

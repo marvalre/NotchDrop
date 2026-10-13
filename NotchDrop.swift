@@ -6092,7 +6092,14 @@ enum ClipboardTextPolicy {
     static let maxCapturedBytes = 1 * 1024 * 1024
     static let previewCharacters = 300
     static func shouldCapture(_ text: String) -> Bool { text.utf8.count <= maxCapturedBytes }
-    static func preview(_ text: String) -> String { String(text.prefix(previewCharacters)) }
+    /// One line, always. A copied paragraph keeps its line breaks, and a label that gets a
+    /// "\n" draws a second line above/below its row — over the "CLIPBOARD HISTORY" header.
+    /// Every run of whitespace (newlines, tabs, repeated spaces) becomes one space.
+    static func preview(_ text: String) -> String {
+        let head = text.prefix(previewCharacters * 4)   // enough to fill 300 chars after collapsing
+        let oneLine = head.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+        return String(oneLine.prefix(previewCharacters))
+    }
 }
 
 enum PlaybackTime {

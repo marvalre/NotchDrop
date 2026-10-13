@@ -424,6 +424,9 @@ check(ArtworkFingerprint.of(artA) != ArtworkFingerprint.of(artB), "la huella nue
 check(ArtworkFingerprint.of(artA) == ArtworkFingerprint.of(artA) && ArtworkFingerprint.of(Data()) != 0, "estable y nunca 0")
 check(ClipboardTextPolicy.shouldCapture("hola") && !ClipboardTextPolicy.shouldCapture(String(repeating: "a", count: 2_000_000)), "texto de 2 MB no se guarda en el historial")
 check(ClipboardTextPolicy.preview(String(repeating: "x", count: 5000)).count == 300, "la fila solo dibuja 300 caracteres")
+check(ClipboardTextPolicy.preview("Quiero que continúes\nun proyecto\r\n\n  que empecé con Codex") == "Quiero que continúes un proyecto que empecé con Codex", "saltos de línea y espacios repetidos se vuelven un espacio (antes la fila se dibujaba de varias líneas sobre el título)")
+check(!ClipboardTextPolicy.preview("a\nb\tc\u{2028}d").contains(where: { $0.isNewline || $0 == "\t" }), "ningún salto ni tabulador llega a la etiqueta")
+check(ClipboardTextPolicy.preview("   \n  hola  ") == "hola", "sin espacios ni saltos al inicio o al final")
 
 print("UpdateInstaller.fetch: plazo total")
 do {

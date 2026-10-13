@@ -15,6 +15,16 @@ git reset --hard v3.9.1
 
 ---
 
+## v3.14.1 — Historial del portapapeles: texto de varias líneas
+
+**Arreglado**
+- **El título "CLIPBOARD HISTORY" se encimaba con el texto copiado.** Cuando copiabas un párrafo con saltos de línea (por ejemplo un mensaje largo), la fila lo dibujaba en varias líneas y se salía hacia arriba, encima del título. Ahora cada entrada de texto se muestra siempre en **una sola línea** (los saltos y espacios repetidos se vuelven un espacio y el final se corta con "…"). Lo que copiaste no cambia: al pulsar *Copy* se copia el texto completo con sus saltos.
+
+**Verificación**
+- 268 comprobaciones automáticas (3 nuevas para este caso: saltos de línea, tabuladores y espacios al inicio/final).
+
+---
+
 ## v3.14.0 — Varias alarmas a la vez
 
 **Agregado**

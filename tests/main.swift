@@ -185,6 +185,17 @@ check(d.collapse, "abierto con ⌥⌘N: después de haber entrado, salir SÍ cie
 d = AutoCollapsePolicy.decide(pointer: inside, paddedRect: panelRect, keyboardOpened: false, hasEntered: false)
 check(!d.collapse, "mouse dentro nunca cierra")
 
+print("AutoCollapsePolicy: menú de monedas abierto")
+d = AutoCollapsePolicy.decide(pointer: outside, paddedRect: panelRect, keyboardOpened: false, hasEntered: true, menuOpen: true)
+check(!d.collapse, "con un menú abierto (lista de monedas que baja del panel) NO se cierra aunque el cursor esté fuera")
+var m = AutoCollapsePolicy.afterMenuClosed(hasEntered: true)
+check(m.sticky && !m.hasEntered, "al cerrar el menú queda 'pegado': hay que volver a entrar antes de cerrar por alejarse")
+d = AutoCollapsePolicy.decide(pointer: outside, paddedRect: panelRect, keyboardOpened: m.sticky, hasEntered: m.hasEntered)
+check(!d.collapse, "después de elegir moneda con el cursor fuera, no se cierra solo (solo con clic afuera)")
+d = AutoCollapsePolicy.decide(pointer: inside, paddedRect: panelRect, keyboardOpened: m.sticky, hasEntered: d.hasEntered)
+d = AutoCollapsePolicy.decide(pointer: outside, paddedRect: panelRect, keyboardOpened: m.sticky, hasEntered: d.hasEntered)
+check(d.collapse, "si el cursor vuelve a entrar y luego se va, ya se cierra normal")
+
 print("StopwatchClock")
 let t0 = Date(timeIntervalSinceReferenceDate: 1_000_000)
 var sw = StopwatchClock()

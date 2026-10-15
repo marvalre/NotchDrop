@@ -15,6 +15,16 @@ git reset --hard v3.9.1
 
 ---
 
+## v3.14.2 — El panel ya no se cierra mientras eliges moneda
+
+**Arreglado**
+- **Elegir moneda cerraba el panel.** La lista de monedas es larga y se dibuja más abajo del panel; al bajar el mouse para elegir, la app creía que el cursor se había ido y cerraba el panel con el menú todavía abierto. Ahora, mientras un menú está abierto, el panel no se cierra por alejar el mouse, y después de elegir se queda abierto hasta que el cursor vuelva a entrar o hagas clic afuera.
+
+**Verificación**
+- 272 comprobaciones automáticas (4 nuevas para este caso).
+
+---
+
 ## v3.14.1 — Historial del portapapeles: texto de varias líneas
 
 **Arreglado**

@@ -2059,6 +2059,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     var bridgeStartedAt = Date()
     var openedByKeyboard = false
     var pointerEnteredSinceKeyboardOpen = false
+    /// A menu inside the panel (currency pop-up) is open right now.
+    var menuTracking = false
+    /// Set when such a menu closes: like a ⌥⌘N open, the panel waits for the pointer to come back.
+    var collapseNeedsReentry = false
     var updateStatusLabel: NSTextField!
     var updateActionBtn: NSButton!
     var availableUpdate: UpdateRelease?
@@ -2384,8 +2388,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 // Collapse if mouse moves far outside the expanded panel (give 10px buffer)
                 let paddedRect = expandedRect.insetBy(dx: -10, dy: -10)
                 let d = AutoCollapsePolicy.decide(pointer: loc, paddedRect: paddedRect,
-                                                  keyboardOpened: self.openedByKeyboard,
-                                                  hasEntered: self.pointerEnteredSinceKeyboardOpen)
+                                                  keyboardOpened: self.openedByKeyboard || self.collapseNeedsReentry,
+                                                  hasEntered: self.pointerEnteredSinceKeyboardOpen,
+                                                  menuOpen: self.menuTracking)
                 self.pointerEnteredSinceKeyboardOpen = d.hasEntered
                 if d.collapse { self.collapsePanel() }
             }
@@ -2448,6 +2453,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             }
         }
         
+        // Pop-up menus in the panel (currency pickers) — see AutoCollapsePolicy.
+        NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.isExpanded else { return }
+            self.menuTracking = true
+        }
+        NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.menuTracking else { return }
+            self.menuTracking = false
+            let next = AutoCollapsePolicy.afterMenuClosed(hasEntered: self.pointerEnteredSinceKeyboardOpen)
+            self.collapseNeedsReentry = next.sticky
+            self.pointerEnteredSinceKeyboardOpen = next.hasEntered
+        }
+
         registerGlobalHotkey()
         startPollingLoop()
     }
@@ -4373,7 +4391,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // indistinguishable from a phantom click, sound and all.
     func expandPanel(forFileDrop: Bool = false, withHaptic: Bool = false) {
         guard !isExpanded, !isTransitioning else { return }
-        openedByKeyboard = false; pointerEnteredSinceKeyboardOpen = false
+        openedByKeyboard = false; pointerEnteredSinceKeyboardOpen = false; collapseNeedsReentry = false
         // A no-op on anything without a Force Touch trackpad (external mouse,
         // older trackpads) — safe to call unconditionally.
         if withHaptic {
@@ -4423,7 +4441,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // changed, clicked elsewhere) must stay silent.
     func collapsePanel(withHaptic: Bool = false) {
         guard isExpanded, !isTransitioning else { return }
-        openedByKeyboard = false; pointerEnteredSinceKeyboardOpen = false
+        openedByKeyboard = false; pointerEnteredSinceKeyboardOpen = false; collapseNeedsReentry = false
         if withHaptic {
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         }
@@ -4534,7 +4552,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         let expandedRect = getPanelRect(expanded: true)
         let paddedRect = expandedRect.insetBy(dx: -10, dy: -10)
         let d = AutoCollapsePolicy.decide(pointer: NSEvent.mouseLocation, paddedRect: paddedRect,
-                                          keyboardOpened: openedByKeyboard, hasEntered: pointerEnteredSinceKeyboardOpen)
+                                          keyboardOpened: openedByKeyboard || collapseNeedsReentry,
+                                          hasEntered: pointerEnteredSinceKeyboardOpen, menuOpen: menuTracking)
         pointerEnteredSinceKeyboardOpen = d.hasEntered
         if d.collapse { collapsePanel() }
     }
@@ -6232,14 +6251,22 @@ struct AlarmStore {
 // typically resting in a document), so distance alone used to close it within
 // about a second of opening. Until the pointer has been inside once, a
 // keyboard-opened panel stays open; afterwards it behaves like any other.
+// A pop-up menu (the currency list) is drawn below the panel, so while it's open the
+// pointer is "outside" by geometry even though the person is still choosing. Pointer
+// distance never closes the panel while a menu is open, and after it closes the panel
+// stays until the pointer has come back in once — clicking outside still closes it.
 enum AutoCollapsePolicy {
-    static func decide(pointer: NSPoint, paddedRect: NSRect, keyboardOpened: Bool, hasEntered: Bool) -> (collapse: Bool, hasEntered: Bool) {
+    static func decide(pointer: NSPoint, paddedRect: NSRect, keyboardOpened: Bool, hasEntered: Bool, menuOpen: Bool = false) -> (collapse: Bool, hasEntered: Bool) {
+        if menuOpen { return (false, hasEntered) }
         let inside = paddedRect.contains(pointer)
         let entered = hasEntered || inside
         if inside { return (false, entered) }
         if keyboardOpened && !entered { return (false, entered) }
         return (true, entered)
     }
+
+    /// State to continue with once a menu closes: sticky until the pointer re-enters.
+    static func afterMenuClosed(hasEntered: Bool) -> (sticky: Bool, hasEntered: Bool) { (true, false) }
 }
 
 // Elapsed time comes from wall-clock timestamps, not from counting timer
